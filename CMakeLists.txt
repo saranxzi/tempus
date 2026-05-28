@@ -43,10 +43,43 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# Dear ImGui — fetch and build
+# ---------------------------------------------------------------------------
+include(FetchContent)
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.90.4
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(imgui)
+
+set(IMGUI_SOURCES
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+)
+
+add_library(imgui STATIC ${IMGUI_SOURCES})
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+if(MSVC)
+    target_compile_options(imgui PRIVATE /O1 /W3)
+else()
+    target_compile_options(imgui PRIVATE -Os -w)
+endif()
+
+# ---------------------------------------------------------------------------
 # Tempus engine — main executable
 # ---------------------------------------------------------------------------
 set(TEMPUS_SOURCES
     src/main.cpp
+    src/gui.cpp
     src/logger.cpp
     src/app_paths.cpp
     src/database_manager.cpp
@@ -56,9 +89,11 @@ set(TEMPUS_SOURCES
 
 add_executable(Tempus WIN32 ${TEMPUS_SOURCES})
 target_include_directories(Tempus PRIVATE include)
-target_link_libraries(Tempus PRIVATE sqlite3 shell32)
+target_link_libraries(Tempus PRIVATE sqlite3 shell32 imgui d3d11 dxgi d3dcompiler uuid)
 tempus_apply_release_flags(Tempus)
 tempus_apply_release_flags(sqlite3)
+tempus_apply_release_flags(imgui)
+
 
 # ---------------------------------------------------------------------------
 # Tests (opt-in via -DTEMPUS_BUILD_TESTS=ON)
