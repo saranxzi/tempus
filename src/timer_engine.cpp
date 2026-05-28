@@ -71,6 +71,8 @@ VoidR TimerEngine::stop() {
     }
 
     current_task_.clear();
+    active_tags_.clear();
+    active_details_.clear();
     session_count_ = 0;
     state_         = TimerState::Idle;
 
@@ -151,6 +153,8 @@ TimerSnapshot TimerEngine::snapshot() const {
     snap.state         = state_;
     snap.remaining_sec = remaining_sec();
     snap.current_task  = current_task_;
+    snap.tags          = active_tags_;
+    snap.details       = active_details_;
     snap.session_count = session_count_;
     snap.timestamp     = clock_->wall_time();
     return snap;
@@ -164,6 +168,8 @@ VoidR TimerEngine::restore(const TimerSnapshot& snap) {
 
     state_         = snap.state;
     current_task_  = snap.current_task;
+    active_tags_   = snap.tags;
+    active_details_ = snap.details;
     session_count_ = snap.session_count;
 
     // Reconstruct the period_start_ so that remaining_sec() returns
@@ -217,6 +223,8 @@ int TimerEngine::current_period_sec() const {
 VoidR TimerEngine::log_session(const std::string& state_str) {
     TaskEntry entry;
     entry.task_name    = current_task_;
+    entry.tags         = active_tags_;
+    entry.details      = active_details_;
     entry.started_at   = session_wall_start_;
     entry.ended_at     = clock_->wall_time();
     entry.duration_sec = static_cast<int>(entry.ended_at - entry.started_at);
@@ -227,6 +235,9 @@ VoidR TimerEngine::log_session(const std::string& state_str) {
         logger_->error("TimerEngine", "Failed to log session: " + r.error());
         return VoidR::err(r.error());
     }
+
+    active_tags_.clear();
+    active_details_.clear();
     return VoidR::ok();
 }
 

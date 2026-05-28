@@ -51,6 +51,11 @@ public:
     int                session_count()  const { return session_count_; }
     const std::string& current_task()   const { return current_task_; }
     const TimerConfig& config()         const { return config_; }
+    void               set_config(const TimerConfig& config) { config_ = config; }
+    void               set_active_tags_and_details(std::string tags, std::string details) {
+        active_tags_ = std::move(tags);
+        active_details_ = std::move(details);
+    }
 
 private:
     /// Duration in seconds for the current state's period.
@@ -69,6 +74,8 @@ private:
 
     TimerState  state_         = TimerState::Idle;
     std::string current_task_;
+    std::string active_tags_;
+    std::string active_details_;
     int         session_count_ = 0;
 
     std::chrono::steady_clock::time_point period_start_;
@@ -76,5 +83,6 @@ private:
     std::chrono::seconds                  paused_duration_{0};
     std::time_t                           session_wall_start_ = 0;
 };
+
 
 } // namespace tempus
