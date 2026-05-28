@@ -6,10 +6,10 @@ include(CheckIPOSupported)
 function(tempus_apply_release_flags target)
     # --- LTO (Link-Time Optimization) ---
     check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
-    if(ipo_supported)
+    if(ipo_supported AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     else()
-        message(STATUS "LTO not supported for ${target}: ${ipo_error}")
+        message(STATUS "LTO not supported or disabled for ${target}")
     endif()
 
     # --- Compiler-specific size flags ---
