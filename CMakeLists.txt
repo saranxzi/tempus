@@ -89,7 +89,7 @@ set(TEMPUS_SOURCES
 
 add_executable(Tempus WIN32 ${TEMPUS_SOURCES})
 target_include_directories(Tempus PRIVATE include)
-target_link_libraries(Tempus PRIVATE sqlite3 shell32 imgui d3d11 dxgi d3dcompiler uuid)
+target_link_libraries(Tempus PRIVATE sqlite3 shell32 imgui d3d11 dxgi d3dcompiler uuid dwmapi)
 tempus_apply_release_flags(Tempus)
 tempus_apply_release_flags(sqlite3)
 tempus_apply_release_flags(imgui)
