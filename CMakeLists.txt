@@ -35,7 +35,6 @@ target_compile_definitions(sqlite3 PRIVATE
     SQLITE_OMIT_DECLTYPE=1
     SQLITE_OMIT_PROGRESS_CALLBACK=1
     SQLITE_OMIT_SHARED_CACHE=1
-    SQLITE_OMIT_AUTOINIT=1
 )
 if(MSVC)
     target_compile_options(sqlite3 PRIVATE /O1 /W3)
