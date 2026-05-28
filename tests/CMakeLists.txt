@@ -29,6 +29,8 @@ target_include_directories(tempus_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(tempus_tests PRIVATE Catch2::Catch2WithMain sqlite3 shell32)
 
 # Register with CTest.
-include(Catch2::Catch2WithMain)
+list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+include(Catch)
 include(CTest)
 catch_discover_tests(tempus_tests)
+
