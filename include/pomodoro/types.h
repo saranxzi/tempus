@@ -70,6 +70,8 @@ struct TimerConfig {
 struct TaskEntry {
     int64_t     id            = 0;
     std::string task_name;
+    std::string tags;                ///< Comma-separated categories
+    std::string details;             ///< Detailed task notes
     std::time_t started_at    = 0;   ///< Unix epoch seconds
     std::time_t ended_at      = 0;   ///< Unix epoch seconds
     int         duration_sec  = 0;
@@ -81,8 +83,11 @@ struct TimerSnapshot {
     TimerState  state          = TimerState::Idle;
     int         remaining_sec  = 0;
     std::string current_task;
+    std::string tags;
+    std::string details;
     int         session_count  = 0;
     std::time_t timestamp      = 0;   ///< When this snapshot was taken
 };
+
 
 } // namespace tempus

@@ -88,3 +88,37 @@ TEST_CASE("Database: invalid state rejected by CHECK constraint", "[db]") {
     auto result = h.db.log_session(entry);
     REQUIRE(result.is_err());
 }
+
+TEST_CASE("Database: update session details and tags", "[db]") {
+    DbHarness h;
+
+    auto entry = make_entry("Original Task", 1000, 60, "completed");
+    entry.tags = "old_tag";
+    entry.details = "original description";
+
+    auto log_result = h.db.log_session(entry);
+    REQUIRE(log_result.is_ok());
+    entry.id = log_result.value();
+
+    // Modify fields
+    entry.task_name = "Updated Task";
+    entry.tags = "new_tag,other_tag";
+    entry.details = "updated description notes";
+    entry.duration_sec = 120;
+    entry.ended_at = entry.started_at + entry.duration_sec;
+
+    auto update_result = h.db.update_session(entry);
+    REQUIRE(update_result.is_ok());
+
+    auto query_result = h.db.get_recent_sessions(1);
+    REQUIRE(query_result.is_ok());
+    REQUIRE(query_result.value().size() == 1);
+
+    const auto& s = query_result.value()[0];
+    REQUIRE(s.id == entry.id);
+    REQUIRE(s.task_name == "Updated Task");
+    REQUIRE(s.tags == "new_tag,other_tag");
+    REQUIRE(s.details == "updated description notes");
+    REQUIRE(s.duration_sec == 120);
+}
+

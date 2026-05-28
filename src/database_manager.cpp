@@ -72,6 +72,8 @@ VoidR SqliteDatabaseManager::ensure_schema() {
         CREATE TABLE IF NOT EXISTS sessions (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             task_name    TEXT    NOT NULL,
+            tags         TEXT    NOT NULL DEFAULT '',
+            details      TEXT    NOT NULL DEFAULT '',
             started_at   INTEGER NOT NULL,
             ended_at     INTEGER NOT NULL,
             duration_sec INTEGER NOT NULL,
@@ -88,15 +90,22 @@ VoidR SqliteDatabaseManager::ensure_schema() {
         INSERT OR IGNORE INTO schema_version(version) VALUES (1);
     )SQL";
 
-    return exec(sql);
+    auto r = exec(sql);
+    if (r.is_err()) return r;
+
+    // Defensively migrate existing databases to add missing columns.
+    exec("ALTER TABLE sessions ADD COLUMN tags TEXT NOT NULL DEFAULT '';");
+    exec("ALTER TABLE sessions ADD COLUMN details TEXT NOT NULL DEFAULT '';");
+
+    return VoidR::ok();
 }
 
 // ─── CRUD Operations ────────────────────────────────────────────────────────
 
 Result<int64_t> SqliteDatabaseManager::log_session(const TaskEntry& entry) {
     const char* sql =
-        "INSERT INTO sessions (task_name, started_at, ended_at, duration_sec, state) "
-        "VALUES (?, ?, ?, ?, ?);";
+        "INSERT INTO sessions (task_name, tags, details, started_at, ended_at, duration_sec, state) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?);";
 
     sqlite3_stmt* raw = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
@@ -108,10 +117,12 @@ Result<int64_t> SqliteDatabaseManager::log_session(const TaskEntry& entry) {
     }
 
     sqlite3_bind_text(stmt.get(), 1, entry.task_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt.get(), 2, static_cast<int64_t>(entry.started_at));
-    sqlite3_bind_int64(stmt.get(), 3, static_cast<int64_t>(entry.ended_at));
-    sqlite3_bind_int(stmt.get(), 4, entry.duration_sec);
-    sqlite3_bind_text(stmt.get(), 5, entry.state.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 2, entry.tags.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 3, entry.details.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 4, static_cast<int64_t>(entry.started_at));
+    sqlite3_bind_int64(stmt.get(), 5, static_cast<int64_t>(entry.ended_at));
+    sqlite3_bind_int(stmt.get(), 6, entry.duration_sec);
+    sqlite3_bind_text(stmt.get(), 7, entry.state.c_str(), -1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_DONE) {
@@ -130,7 +141,7 @@ Result<std::vector<TaskEntry>> SqliteDatabaseManager::get_sessions(
     std::time_t from, std::time_t to)
 {
     const char* sql =
-        "SELECT id, task_name, started_at, ended_at, duration_sec, state "
+        "SELECT id, task_name, tags, details, started_at, ended_at, duration_sec, state "
         "FROM sessions WHERE started_at >= ? AND started_at <= ? "
         "ORDER BY started_at DESC;";
 
@@ -151,10 +162,17 @@ Result<std::vector<TaskEntry>> SqliteDatabaseManager::get_sessions(
         TaskEntry e;
         e.id           = sqlite3_column_int64(stmt.get(), 0);
         e.task_name    = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 1));
-        e.started_at   = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 2));
-        e.ended_at     = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 3));
-        e.duration_sec = sqlite3_column_int(stmt.get(), 4);
-        e.state        = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 5));
+        
+        const char* t_raw = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 2));
+        e.tags         = t_raw ? t_raw : "";
+
+        const char* d_raw = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 3));
+        e.details      = d_raw ? d_raw : "";
+
+        e.started_at   = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 4));
+        e.ended_at     = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 5));
+        e.duration_sec = sqlite3_column_int(stmt.get(), 6);
+        e.state        = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 7));
         results.push_back(std::move(e));
     }
 
@@ -168,7 +186,7 @@ Result<std::vector<TaskEntry>> SqliteDatabaseManager::get_sessions(
 
 Result<std::vector<TaskEntry>> SqliteDatabaseManager::get_recent_sessions(int limit) {
     const char* sql =
-        "SELECT id, task_name, started_at, ended_at, duration_sec, state "
+        "SELECT id, task_name, tags, details, started_at, ended_at, duration_sec, state "
         "FROM sessions ORDER BY started_at DESC LIMIT ?;";
 
     sqlite3_stmt* raw = nullptr;
@@ -187,10 +205,17 @@ Result<std::vector<TaskEntry>> SqliteDatabaseManager::get_recent_sessions(int li
         TaskEntry e;
         e.id           = sqlite3_column_int64(stmt.get(), 0);
         e.task_name    = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 1));
-        e.started_at   = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 2));
-        e.ended_at     = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 3));
-        e.duration_sec = sqlite3_column_int(stmt.get(), 4);
-        e.state        = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 5));
+        
+        const char* t_raw = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 2));
+        e.tags         = t_raw ? t_raw : "";
+
+        const char* d_raw = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 3));
+        e.details      = d_raw ? d_raw : "";
+
+        e.started_at   = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 4));
+        e.ended_at     = static_cast<std::time_t>(sqlite3_column_int64(stmt.get(), 5));
+        e.duration_sec = sqlite3_column_int(stmt.get(), 6);
+        e.state        = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 7));
         results.push_back(std::move(e));
     }
 
@@ -221,6 +246,38 @@ VoidR SqliteDatabaseManager::delete_session(int64_t id) {
     }
 
     logger_->info("DatabaseManager", "Deleted session id=" + std::to_string(id));
+    return VoidR::ok();
+}
+
+VoidR SqliteDatabaseManager::update_session(const TaskEntry& entry) {
+    const char* sql =
+        "UPDATE sessions SET task_name = ?, tags = ?, details = ?, "
+        "started_at = ?, ended_at = ?, duration_sec = ?, state = ? "
+        "WHERE id = ?;";
+
+    sqlite3_stmt* raw = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+    StmtGuard stmt(raw);
+
+    if (rc != SQLITE_OK) {
+        return VoidR::err(std::string("Prepare failed: ") + sqlite3_errmsg(db_));
+    }
+
+    sqlite3_bind_text(stmt.get(), 1, entry.task_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 2, entry.tags.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 3, entry.details.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 4, static_cast<int64_t>(entry.started_at));
+    sqlite3_bind_int64(stmt.get(), 5, static_cast<int64_t>(entry.ended_at));
+    sqlite3_bind_int(stmt.get(), 6, entry.duration_sec);
+    sqlite3_bind_text(stmt.get(), 7, entry.state.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt.get(), 8, entry.id);
+
+    rc = sqlite3_step(stmt.get());
+    if (rc != SQLITE_DONE) {
+        return VoidR::err(std::string("Update failed: ") + sqlite3_errmsg(db_));
+    }
+
+    logger_->info("DatabaseManager", "Updated session id=" + std::to_string(entry.id));
     return VoidR::ok();
 }
 

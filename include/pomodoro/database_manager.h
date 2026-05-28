@@ -30,6 +30,9 @@ public:
 
     /// Delete a session by ID.
     virtual VoidR delete_session(int64_t id) = 0;
+
+    /// Update an existing session's details.
+    virtual VoidR update_session(const TaskEntry& entry) = 0;
 };
 
 /// SQLite-backed implementation of IDatabaseManager.
@@ -51,6 +54,8 @@ public:
         std::time_t from, std::time_t to) override;
     Result<std::vector<TaskEntry>> get_recent_sessions(int limit) override;
     VoidR delete_session(int64_t id) override;
+    VoidR update_session(const TaskEntry& entry) override;
+
 
 private:
     VoidR exec(const std::string& sql);
