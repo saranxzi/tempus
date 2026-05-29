@@ -115,7 +115,6 @@ void GuiManager::render(bool& running) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
     
@@ -182,7 +181,7 @@ void GuiManager::render_sidebar() {
 
 // ─── Time Tracking View ──────────────────────────────────────────────────────
 void GuiManager::render_time_tracking() {
-    ImGui::TextStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 6));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 6));
 
     ImGui::Text("Time tracking");
     ImGui::Spacing();
@@ -240,7 +239,6 @@ void GuiManager::render_time_tracking() {
         std::string s_date = to_date_string(session.started_at);
         if (s_date != current_date) {
             if (in_header) {
-                ImGui::EndColumns();
                 ImGui::Spacing();
             }
             current_date = s_date;
@@ -560,6 +558,7 @@ void GuiManager::render_pomodoro() {
 
     // Draw progress arc
     if (fraction > 0.001f) {
+        const float IM_PI = 3.1415926535f;
         float start_angle = -IM_PI / 2.0f; // 12 o'clock top
         float end_angle = start_angle + fraction * 2.0f * IM_PI;
         draw_list->PathClear();
