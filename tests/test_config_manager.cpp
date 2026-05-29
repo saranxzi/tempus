@@ -32,6 +32,7 @@ TEST_CASE("ConfigManager: default config when missing", "[config]") {
     REQUIRE(config.weekly_goal_hours == 40);
     REQUIRE(config.theme_index == 0);
     REQUIRE(config.sound_enabled == true);
+    REQUIRE(config.always_on_top == false);
 }
 
 TEST_CASE("ConfigManager: round-trip serialization", "[config]") {
@@ -46,6 +47,7 @@ TEST_CASE("ConfigManager: round-trip serialization", "[config]") {
     config.weekly_goal_hours = 35;
     config.theme_index = 2;
     config.sound_enabled = false;
+    config.always_on_top = true;
 
     REQUIRE(ConfigManager::save(config, path).is_ok());
 
@@ -60,6 +62,7 @@ TEST_CASE("ConfigManager: round-trip serialization", "[config]") {
     REQUIRE(loaded.weekly_goal_hours == 35);
     REQUIRE(loaded.theme_index == 2);
     REQUIRE(loaded.sound_enabled == false);
+    REQUIRE(loaded.always_on_top == true);
 
     cleanup(path);
 }

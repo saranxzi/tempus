@@ -14,6 +14,7 @@ struct AppConfig {
     int weekly_goal_hours        = 40;        ///< Target weekly focus hours
     int theme_index              = 0;         ///< 0 = Midnight, 1 = Obsidian, 2 = Forest Mint, 3 = Slate
     bool sound_enabled           = true;      ///< Play standard system audio notifications
+    bool always_on_top           = false;     ///< Keep window always on top of other windows
 };
 
 /// Handles loading and saving AppConfig from a simple key-value configuration file.

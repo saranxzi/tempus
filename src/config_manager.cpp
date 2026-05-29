@@ -49,6 +49,8 @@ Result<AppConfig> ConfigManager::load(const std::filesystem::path& filepath) {
                 config.theme_index = std::stoi(val_str);
             } else if (key == "sound_enabled") {
                 config.sound_enabled = (std::stoi(val_str) != 0);
+            } else if (key == "always_on_top") {
+                config.always_on_top = (std::stoi(val_str) != 0);
             }
         } catch (...) {
             // Ignore parse errors for individual values and keep defaults
@@ -71,7 +73,8 @@ VoidR ConfigManager::save(const AppConfig& config, const std::filesystem::path& 
          << "sessions_before_long_break=" << config.sessions_before_long_break << "\n"
          << "weekly_goal_hours=" << config.weekly_goal_hours << "\n"
          << "theme_index=" << config.theme_index << "\n"
-         << "sound_enabled=" << (config.sound_enabled ? 1 : 0) << "\n";
+         << "sound_enabled=" << (config.sound_enabled ? 1 : 0) << "\n"
+         << "always_on_top=" << (config.always_on_top ? 1 : 0) << "\n";
 
     return VoidR::ok();
 }

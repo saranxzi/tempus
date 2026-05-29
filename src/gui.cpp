@@ -7,11 +7,13 @@
 #include "imgui_impl_dx11.h"
 #include <iomanip>
 #include <sstream>
+#include <fstream>
 #include <ctime>
 #include <algorithm>
 #include <map>
 #include <filesystem>
 #include <cmath>
+#include <cstdlib>
 
 namespace tempus {
 
@@ -225,7 +227,18 @@ void GuiManager::apply_theme(int theme_idx) {
 }
 
 // Main render entry point
-void GuiManager::render(bool& running) {
+void GuiManager::render(bool& running, void* hwnd) {
+    // Set topmost window state on first frame if config is set
+    static bool first_frame = true;
+    if (first_frame) {
+        first_frame = false;
+        if (hwnd && config_.always_on_top) {
+#ifdef _WIN32
+            ::SetWindowPos((HWND)hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+#endif
+        }
+    }
+
     // We update database cached records and trigger system sound alerts if state transitions
     static TimerState sound_last_state = TimerState::Idle;
     TimerState current_state = engine_->state();
@@ -289,7 +302,7 @@ void GuiManager::render(bool& running) {
         case 1: render_time_tracking(); break;
         case 2: render_pomodoro();      break;
         case 3: render_analytics();     break;
-        case 4: render_settings();      break;
+        case 4: render_settings(hwnd);  break;
         default: break;
     }
 
@@ -1337,10 +1350,97 @@ void GuiManager::render_analytics() {
     } else {
         ImGui::TextDisabled("No categorised session data found for this period.");
     }
+
+    // CSV Export Section
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Text("Data Export");
+    ImGui::Spacing();
+
+    static std::string export_status_msg = "";
+    static float export_status_timer = 0.0f;
+    static ImVec4 export_status_color = ImVec4(0.10f, 0.72f, 0.50f, 1.00f); // green
+
+    if (ImGui::Button("Export Time Logs to CSV", ImVec2(200, 32))) {
+        // Query database
+        auto all_sessions_res = db_->get_recent_sessions(10000);
+        if (all_sessions_res.is_err()) {
+            export_status_msg = "Error querying logs: " + all_sessions_res.error();
+            export_status_color = ImVec4(0.9f, 0.2f, 0.2f, 1.0f); // red
+            export_status_timer = 5.0f;
+        } else {
+            // Find user profile downloads folder
+            std::string path_str = "";
+            char* userprofile = std::getenv("USERPROFILE");
+            if (userprofile != nullptr) {
+                path_str = std::string(userprofile) + "\\Downloads\\tempus_export.csv";
+            } else {
+                path_str = "tempus_export.csv";
+            }
+
+            std::ofstream csv(path_str);
+            if (!csv.is_open()) {
+                export_status_msg = "Failed to create file: " + path_str;
+                export_status_color = ImVec4(0.9f, 0.2f, 0.2f, 1.0f); // red
+                export_status_timer = 5.0f;
+            } else {
+                // Escape function inline helper
+                auto escape_csv_str = [](std::string s) -> std::string {
+                    size_t pos = 0;
+                    while ((pos = s.find('"', pos)) != std::string::npos) {
+                        s.replace(pos, 1, "\"\"");
+                        pos += 2;
+                    }
+                    return s;
+                };
+
+                // Datetime format helper
+                auto to_datetime_string = [](std::time_t t) -> std::string {
+                    std::tm tm_val;
+#ifdef _WIN32
+                    localtime_s(&tm_val, &t);
+#else
+                    localtime_r(&t, &tm_val);
+#endif
+                    char buf[64];
+                    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_val);
+                    return std::string(buf);
+                };
+
+                // Write header
+                csv << "ID,Task Name,Started At,Ended At,Duration (Seconds),Duration (Formatted),State,Tags,Details\n";
+                
+                // Write entries
+                for (const auto& s : all_sessions_res.value()) {
+                    csv << s.id << ","
+                        << "\"" << escape_csv_str(s.task_name) << "\","
+                        << "\"" << to_datetime_string(s.started_at) << "\","
+                        << "\"" << to_datetime_string(s.ended_at) << "\","
+                        << s.duration_sec << ","
+                        << "\"" << format_duration(s.duration_sec) << "\","
+                        << "\"" << escape_csv_str(s.state) << "\","
+                        << "\"" << escape_csv_str(s.tags) << "\","
+                        << "\"" << escape_csv_str(s.details) << "\"\n";
+                }
+                csv.close();
+
+                export_status_msg = "Logs exported to " + path_str;
+                export_status_color = ImVec4(0.10f, 0.72f, 0.50f, 1.00f); // green
+                export_status_timer = 5.0f;
+            }
+        }
+    }
+
+    if (export_status_timer > 0.0f) {
+        export_status_timer -= ImGui::GetIO().DeltaTime;
+        ImGui::SameLine();
+        ImGui::TextColored(export_status_color, "%s", export_status_msg.c_str());
+    }
 }
 
 // ─── Settings View ───────────────────────────────────────────────────────────
-void GuiManager::render_settings() {
+void GuiManager::render_settings(void* hwnd) {
     ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
     ImGui::PushFont(header_font);
     ImGui::Text("Settings");
@@ -1360,12 +1460,24 @@ void GuiManager::render_settings() {
     }
     ImGui::Spacing();
 
-    // 2. Notification Options
-    ImGui::Text("Notifications:");
+    // 2. Behavior Options
+    ImGui::Text("Application Behaviour:");
     bool sounds = config_.sound_enabled;
     if (ImGui::Checkbox("Enable Sound Alerts", &sounds)) {
         config_.sound_enabled = sounds;
         ConfigManager::save(config_, config_path_);
+    }
+    ImGui::SameLine(220.0f);
+
+    bool always_on_top = config_.always_on_top;
+    if (ImGui::Checkbox("Always on Top", &always_on_top)) {
+        config_.always_on_top = always_on_top;
+        ConfigManager::save(config_, config_path_);
+        if (hwnd) {
+#ifdef _WIN32
+            ::SetWindowPos((HWND)hwnd, always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+#endif
+        }
     }
     ImGui::Spacing();
 

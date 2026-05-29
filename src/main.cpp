@@ -174,7 +174,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         ImGui::NewFrame();
 
         // Render main layout
-        gui.render(running);
+        gui.render(running, hwnd);
 
         // Rendering
         ImGui::Render();

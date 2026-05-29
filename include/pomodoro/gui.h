@@ -23,7 +23,8 @@ public:
 
     /// Render the main frame container (collapsible sidebar + switchable main view).
     /// @param running Out-parameter to signal application exit.
-    void render(bool& running);
+    /// @param hwnd Native window handle (HWND on Windows).
+    void render(bool& running, void* hwnd = nullptr);
 
 private:
     // ─── Individual view renderers ───────────────────────────────────────────
@@ -32,7 +33,7 @@ private:
     void render_time_tracking();
     void render_pomodoro();
     void render_analytics();
-    void render_settings();
+    void render_settings(void* hwnd);
 
     // ─── Style & Styling presets ─────────────────────────────────────────────
     void apply_theme(int theme_idx);
