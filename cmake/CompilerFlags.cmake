@@ -25,7 +25,7 @@ function(tempus_apply_release_flags target)
             $<$<CONFIG:Release>:-Os -ffunction-sections -fdata-sections -fno-rtti>
         )
         target_link_options(${target} PRIVATE
-            $<$<CONFIG:Release>:-Wl,--gc-sections -s -static>
+            $<$<CONFIG:Release>:-Wl,--gc-sections -s>
         )
     endif()
 endfunction()
