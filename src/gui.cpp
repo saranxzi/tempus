@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <map>
 #include <filesystem>
+#include <set>
 #include <cmath>
 #include <cstdlib>
 
@@ -42,6 +43,35 @@ static std::string format_duration(int total_sec) {
     return res;
 }
 
+static std::string format_time_range(std::time_t start, std::time_t end) {
+    std::tm tm_start, tm_end;
+#ifdef _WIN32
+    localtime_s(&tm_start, &start);
+    localtime_s(&tm_end, &end);
+#else
+    localtime_r(&start, &tm_start);
+    localtime_r(&end, &tm_end);
+#endif
+    char buf[64];
+    std::strftime(buf, sizeof(buf), "%H:%M", &tm_start);
+    std::string s_str(buf);
+    std::strftime(buf, sizeof(buf), "%H:%M", &tm_end);
+    std::string e_str(buf);
+    return s_str + " - " + e_str;
+}
+
+static std::string to_datetime_string(std::time_t t) {
+    std::tm tm_val;
+#ifdef _WIN32
+    localtime_s(&tm_val, &t);
+#else
+    localtime_r(&t, &tm_val);
+#endif
+    char buf[64];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_val);
+    return std::string(buf);
+}
+
 // Constructor
 GuiManager::GuiManager(TimerEngine* engine, SqliteDatabaseManager* db, ILogger* logger, std::filesystem::path config_path)
     : engine_(engine)
@@ -68,6 +98,18 @@ GuiManager::GuiManager(TimerEngine* engine, SqliteDatabaseManager* db, ILogger* 
     short_break_min_ = config_.short_break_sec / 60;
     long_break_min_ = config_.long_break_sec / 60;
     sessions_before_long_ = config_.sessions_before_long_break;
+
+    // Initialize default checklist items
+    focus_todos_ = { "Deep Work Block", "Code Implementation", "Self-Review & Verify" };
+    focus_todos_done_ = { false, false, false };
+
+    // Initialize default backup path
+    char* userprofile = std::getenv("USERPROFILE");
+    if (userprofile != nullptr) {
+        sprintf_s(backup_path_, "%s\\Downloads\\tempus_backup.db", userprofile);
+    } else {
+        strcpy_s(backup_path_, "tempus_backup.db");
+    }
 
     // Load initial list from database
     auto list = db_->get_recent_sessions(100);
@@ -228,7 +270,49 @@ void GuiManager::apply_theme(int theme_idx) {
 
 // Main render entry point
 void GuiManager::render(bool& running, void* hwnd) {
-    // Set topmost window state on first frame if config is set
+    // Stopwatch Ticking Logic
+    if (stopwatch_active_ && !stopwatch_paused_) {
+        std::time_t now = std::time(nullptr);
+        if (stopwatch_last_time_ == 0) {
+            stopwatch_last_time_ = now;
+        }
+        if (now > stopwatch_last_time_) {
+            stopwatch_elapsed_sec_ += static_cast<int>(now - stopwatch_last_time_);
+            stopwatch_last_time_ = now;
+        }
+    } else {
+        stopwatch_last_time_ = 0;
+    }
+
+    // Handle mini mode window size adjustments dynamically
+    static bool was_mini = false;
+    if (mini_mode_ != was_mini) {
+        was_mini = mini_mode_;
+        if (hwnd) {
+#ifdef _WIN32
+            if (mini_mode_) {
+                ::SetWindowPos((HWND)hwnd, HWND_TOPMOST, 0, 0, 280, 165, SWP_NOMOVE);
+            } else {
+                HWND topmost_handle = config_.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST;
+                ::SetWindowPos((HWND)hwnd, topmost_handle, 0, 0, 960, 600, SWP_NOMOVE);
+            }
+#endif
+        }
+    }
+
+    // Render compact Mini View if active
+    if (mini_mode_) {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(viewport->WorkPos);
+        ImGui::SetNextWindowSize(viewport->WorkSize);
+        ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+        ImGui::Begin("Tempus Mini Window", nullptr, window_flags);
+        render_mini_view(hwnd);
+        ImGui::End();
+        return;
+    }
+
+    // Set topmost window state on first frame if config is set (fallback)
     static bool first_frame = true;
     if (first_frame) {
         first_frame = false;
@@ -274,6 +358,41 @@ void GuiManager::render(bool& running, void* hwnd) {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
     
     ImGui::Begin("Tempus Main Window", nullptr, window_flags);
+
+    // Launch Floating Stopwatch Modal
+    if (ImGui::BeginPopupModal("Launch Floating Stopwatch", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Enter Task Details:");
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        ImGui::Text("Task Name:");
+        ImGui::InputText("##float_task", float_task_name_, sizeof(float_task_name_));
+        ImGui::Spacing();
+        
+        ImGui::Text("Tags (comma separated):");
+        ImGui::InputText("##float_tags", float_tags_, sizeof(float_tags_));
+        ImGui::Spacing();
+        
+        if (ImGui::Button("Start Floating Clock", ImVec2(160, 30))) {
+            stopwatch_active_ = true;
+            stopwatch_paused_ = false;
+            stopwatch_elapsed_sec_ = 0;
+            stopwatch_last_time_ = std::time(nullptr);
+            timer_mode_ = 1; // switch to stopwatch
+            
+            strcpy_s(stopwatch_task_name_, float_task_name_);
+            strcpy_s(stopwatch_tags_, float_tags_);
+            stopwatch_details_[0] = '\0';
+            
+            mini_mode_ = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80, 30))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     // Left Navigation Sidebar
     render_sidebar();
@@ -509,82 +628,325 @@ void GuiManager::render_dashboard() {
     ImGui::Spacing();
 
     // 3. Lower Grid: Left = Quick Start / Log, Right = Recent Activity
-    float bottom_height = ImGui::GetContentRegionAvail().y - 15.0f;
+    float bottom_height = 190.0f;
     float col_w = (avail.x - 20.0f) * 0.5f;
-
-    ImGui::BeginGroup();
-    // Left Box: Quick Task Initiation
-    ImGui::BeginChild("QuickStart", ImVec2(col_w, bottom_height), true);
-    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Quick Logger");
-    ImGui::Spacing();
-    
-    ImGui::Text("Start tracking instantly:");
-    ImGui::Spacing();
-
-    static char quick_task_[128] = "";
-    ImGui::InputTextWithHint("Task name##quick", "What are you working on?", quick_task_, sizeof(quick_task_));
-    ImGui::Spacing();
-    
-    static char quick_tag_[128] = "";
-    ImGui::InputTextWithHint("Tags##quick", "Comma-separated tags...", quick_tag_, sizeof(quick_tag_));
-    ImGui::Spacing();
-
-    if (state == TimerState::Idle) {
-        if (ImGui::Button("Start Timer Now", ImVec2(col_w - 24.0f, 32.0f))) {
-            std::string t_name = quick_task_[0] == '\0' ? "Focus Session" : quick_task_;
-            engine_->start(t_name);
-            engine_->set_active_tags_and_details(quick_tag_, "Quick logged session from Dashboard.");
-            // Copy values to Pomodoro view variables
-            strncpy_s(task_name_input_, t_name.c_str(), _TRUNCATE);
-            strncpy_s(tags_input_, quick_tag_, _TRUNCATE);
-            details_input_[0] = '\0';
-            active_tab_ = 2; // Jump to Pomodoro view
-        }
-    } else {
-        ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.10f, 1.00f), "Timer is currently active!");
-        if (ImGui::Button("View Timer Status", ImVec2(col_w - 24.0f, 32.0f))) {
-            active_tab_ = 2;
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-
-    // Right Box: Recent Activity Stream
-    ImGui::BeginChild("ActivityStream", ImVec2(col_w, bottom_height), true);
-    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Recent Activity");
-    ImGui::Spacing();
-
-    int shown_count = 0;
-    for (const auto& s : cached_sessions_) {
-        if (shown_count >= 3) break;
-        shown_count++;
-
-        // Draw individual item as a soft card
-        ImGui::BeginChild((std::string("stream_") + std::to_string(s.id)).c_str(), ImVec2(col_w - 24.0f, 54.0f), true, ImGuiWindowFlags_NoScrollbar);
-        
-        ImVec2 p_min = ImGui::GetCursorScreenPos();
-        ImDrawList* d_list = ImGui::GetWindowDrawList();
-        
-        // draw a small color bar on left depending on tag/state
-        ImU32 col = (s.state == "completed") ? IM_COL32(16, 185, 129, 255) : IM_COL32(239, 68, 68, 255);
-        d_list->AddRectFilled(p_min, ImVec2(p_min.x + 3.0f, p_min.y + 36.0f), col);
-        
-        ImGui::Indent(8.0f);
-        ImGui::Text("%s", s.task_name.c_str());
-        ImGui::TextDisabled("%s | %s", to_date_string(s.started_at).c_str(), format_duration(s.duration_sec).c_str());
-        ImGui::Unindent(8.0f);
-        
-        ImGui::EndChild();
-        ImGui::Spacing();
-    }
-    if (shown_count == 0) {
-        ImGui::TextDisabled("No recent activity logged.");
-    }
-    ImGui::EndChild();
-
-    ImGui::EndGroup();
-}
+ 
+     ImGui::BeginGroup();
+     // Left Box: Quick Task Initiation
+     ImGui::BeginChild("QuickStart", ImVec2(col_w, bottom_height), true);
+     ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Quick Logger");
+     ImGui::Spacing();
+     
+     ImGui::Text("Start tracking instantly:");
+     ImGui::Spacing();
+ 
+     static char quick_task_[128] = "";
+     ImGui::InputTextWithHint("Task name##quick", "What are you working on?", quick_task_, sizeof(quick_task_));
+     ImGui::Spacing();
+     
+     static char quick_tag_[128] = "";
+     ImGui::InputTextWithHint("Tags##quick", "Comma-separated tags...", quick_tag_, sizeof(quick_tag_));
+     ImGui::Spacing();
+ 
+     if (state == TimerState::Idle && !stopwatch_active_) {
+         if (ImGui::Button("Start Pomodoro Focus", ImVec2(col_w - 24.0f, 26.0f))) {
+             std::string t_name = quick_task_[0] == '\0' ? "Focus Session" : quick_task_;
+             engine_->start(t_name);
+             engine_->set_active_tags_and_details(quick_tag_, "Quick logged session from Dashboard.");
+             strncpy_s(task_name_input_, t_name.c_str(), _TRUNCATE);
+             strncpy_s(tags_input_, quick_tag_, _TRUNCATE);
+             details_input_[0] = '\0';
+             active_tab_ = 2; // Jump to Pomodoro view
+         }
+         ImGui::Spacing();
+         if (ImGui::Button("Launch Floating Stopwatch", ImVec2(col_w - 24.0f, 26.0f))) {
+             strncpy_s(float_task_name_, quick_task_[0] == '\0' ? "Floating Session" : quick_task_, _TRUNCATE);
+             strncpy_s(float_tags_, quick_tag_[0] == '\0' ? "Focus" : quick_tag_, _TRUNCATE);
+             ImGui::OpenPopup("Launch Floating Stopwatch");
+         }
+     } else {
+         ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.10f, 1.00f), "A session is active!");
+         if (ImGui::Button("View Timer Status", ImVec2(col_w - 24.0f, 32.0f))) {
+             active_tab_ = 2;
+         }
+     }
+     ImGui::EndChild();
+ 
+     ImGui::SameLine();
+ 
+     // Right Box: Recent Activity Stream (each item is clickable to go to Time Tracking view)
+     ImGui::BeginChild("ActivityStream", ImVec2(col_w, bottom_height), true);
+     ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Recent Activity (Click to edit)");
+     ImGui::Spacing();
+ 
+     int shown_count = 0;
+     for (const auto& s : cached_sessions_) {
+         if (shown_count >= 3) break;
+         shown_count++;
+ 
+         // Draw individual item as a soft card using Selectable for click detection
+         std::string card_lbl = "##recent_card_" + std::to_string(s.id);
+         ImVec2 p_min = ImGui::GetCursorScreenPos();
+         ImVec2 card_sz = ImVec2(col_w - 24.0f, 44.0f);
+         
+         bool clicked = ImGui::Selectable(card_lbl.c_str(), false, 0, card_sz);
+         ImDrawList* d_list = ImGui::GetWindowDrawList();
+         
+         ImU32 bg_col = ImGui::GetColorU32(ImGuiCol_FrameBg);
+         if (ImGui::IsItemHovered()) {
+             bg_col = ImGui::GetColorU32(ImGuiCol_FrameBgHovered);
+         }
+         d_list->AddRectFilled(p_min, ImVec2(p_min.x + card_sz.x, p_min.y + card_sz.y), bg_col, 6.0f);
+         d_list->AddRect(p_min, ImVec2(p_min.x + card_sz.x, p_min.y + card_sz.y), ImGui::GetColorU32(ImGuiCol_Border), 6.0f);
+         
+         // draw a small color bar on left depending on tag/state
+         ImU32 col = (s.state == "completed") ? IM_COL32(16, 185, 129, 255) : IM_COL32(239, 68, 68, 255);
+         d_list->AddRectFilled(p_min, ImVec2(p_min.x + 3.0f, p_min.y + card_sz.y), col, 6.0f, ImDrawFlags_RoundCornersLeft);
+         
+         d_list->AddText(ImVec2(p_min.x + 12.0f, p_min.y + 6.0f), IM_COL32(245, 245, 245, 255), s.task_name.c_str());
+         std::string subtitle = format_time_range(s.started_at, s.ended_at) + " | " + format_duration(s.duration_sec);
+         d_list->AddText(ImVec2(p_min.x + 12.0f, p_min.y + 24.0f), IM_COL32(180, 180, 180, 255), subtitle.c_str());
+         
+         if (clicked) {
+             // Go to time tracking tab (index 1) and select the item
+             active_tab_ = 1;
+             for (size_t idx = 0; idx < cached_sessions_.size(); ++idx) {
+                 if (cached_sessions_[idx].id == s.id) {
+                     selected_session_idx_ = static_cast<int>(idx);
+                     details_open_ = true;
+                     
+                     // Load to details panel
+                     strncpy_s(edit_task_name_, cached_sessions_[idx].task_name.c_str(), _TRUNCATE);
+                     strncpy_s(edit_tags_, cached_sessions_[idx].tags.c_str(), _TRUNCATE);
+                     strncpy_s(edit_details_, cached_sessions_[idx].details.c_str(), _TRUNCATE);
+                     edit_duration_sec_ = cached_sessions_[idx].duration_sec;
+                     edit_started_at_ = cached_sessions_[idx].started_at;
+                     
+                     std::tm tm_val;
+ #ifdef _WIN32
+                     localtime_s(&tm_val, &cached_sessions_[idx].started_at);
+ #else
+                     localtime_r(&cached_sessions_[idx].started_at, &tm_val);
+ #endif
+                     start_h_ = tm_val.tm_hour;
+                     start_m_ = tm_val.tm_min;
+                     edit_year_ = tm_val.tm_year + 1900;
+                     edit_month_ = tm_val.tm_mon + 1;
+                     edit_day_ = tm_val.tm_mday;
+                     
+                     std::time_t end_t = cached_sessions_[idx].ended_at;
+ #ifdef _WIN32
+                     localtime_s(&tm_val, &end_t);
+ #else
+                     localtime_r(&end_t, &tm_val);
+ #endif
+                     end_h_ = tm_val.tm_hour;
+                     end_m_ = tm_val.tm_min;
+                     break;
+                 }
+             }
+         }
+         
+         ImGui::Spacing();
+     }
+     if (shown_count == 0) {
+         ImGui::TextDisabled("No recent activity logged.");
+     }
+     ImGui::EndChild();
+     ImGui::EndGroup();
+ 
+     // 4. Fill bottom half: Focus Heatmap (Activity Stream) and Insights & Streaks
+     ImGui::Spacing();
+     ImGui::Separator();
+     ImGui::Spacing();
+ 
+     ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Focus Heatmap & Streaks");
+     ImGui::Spacing();
+ 
+     // Calculate streaks
+     int current_streak = 0;
+     int longest_streak = 0;
+     int total_active_days = 0;
+     std::time_t now = std::time(nullptr);
+     
+     std::set<std::string> active_days_set;
+     for (const auto& s : cached_sessions_) {
+         if (s.state == "completed") {
+             active_days_set.insert(to_date_string(s.started_at));
+         }
+     }
+     
+     std::string today_str = to_date_string(now);
+     std::string yesterday_str = to_date_string(now - 24 * 3600);
+     
+     bool active_today = (active_days_set.find(today_str) != active_days_set.end());
+     bool active_yesterday = (active_days_set.find(yesterday_str) != active_days_set.end());
+     
+     if (active_today || active_yesterday) {
+         int check_day = active_today ? 0 : 1;
+         while (true) {
+             std::string check_str = to_date_string(now - check_day * 24 * 3600);
+             if (active_days_set.find(check_str) != active_days_set.end()) {
+                 current_streak++;
+                 check_day++;
+             } else {
+                 break;
+             }
+         }
+     }
+     
+     int temp_streak = 0;
+     for (int i = 365; i >= 0; --i) {
+         std::string check_str = to_date_string(now - i * 24 * 3600);
+         if (active_days_set.find(check_str) != active_days_set.end()) {
+             temp_streak++;
+             if (temp_streak > longest_streak) {
+                 longest_streak = temp_streak;
+             }
+         } else {
+             temp_streak = 0;
+         }
+     }
+     total_active_days = static_cast<int>(active_days_set.size());
+ 
+     // Completed/interrupted today metrics
+     int completed_count = 0;
+     int interrupted_count = 0;
+     for (const auto& s : cached_sessions_) {
+         if (s.started_at >= start_of_today && s.state == "completed") {
+             completed_count++;
+         } else if (s.started_at >= start_of_today && s.state == "interrupted") {
+             interrupted_count++;
+         }
+     }
+ 
+     float completion_rate = (completed_count + interrupted_count) > 0 ? 
+         (static_cast<float>(completed_count) / (completed_count + interrupted_count)) * 100.0f : 100.0f;
+ 
+     // Draw two panels side-by-side
+     ImVec2 bottom_avail = ImGui::GetContentRegionAvail();
+     float col_w_panel = (bottom_avail.x - 12.0f) * 0.5f;
+ 
+     ImGui::BeginGroup();
+     
+     // LEFT: Weekly Focus Heatmap (4 Weeks)
+     ImGui::BeginChild("HeatmapPanel", ImVec2(col_w_panel, 130), true);
+     ImGui::TextDisabled("FOCUS HEATMAP (LAST 4 WEEKS)");
+     ImGui::Spacing();
+     
+     ImDrawList* h_draw = ImGui::GetWindowDrawList();
+     ImVec2 h_start = ImGui::GetCursorScreenPos();
+     float square_sz = 11.0f;
+     float gap = 3.0f;
+     
+     // Draw row labels
+     const char* day_labels[] = { "M", "W", "F" };
+     for (int d = 0; d < 3; ++d) {
+         ImGui::SetCursorScreenPos(ImVec2(h_start.x, h_start.y + (d * 2 + 1) * (square_sz + gap) + 1.0f));
+         ImGui::TextDisabled("%s", day_labels[d]);
+     }
+     
+     float grid_x = h_start.x + 22.0f;
+     float grid_y = h_start.y;
+     
+     // 4 weeks, 7 rows (days). Column 3 is this week.
+     for (int col = 0; col < 4; ++col) {
+         for (int row = 0; row < 7; ++row) {
+             std::tm tm_now;
+             #ifdef _WIN32
+             localtime_s(&tm_now, &now);
+             #else
+             localtime_r(&now, &tm_now);
+             #endif
+             int today_wday = tm_now.tm_wday == 0 ? 6 : tm_now.tm_wday - 1; // 0 = Mon, ..., 6 = Sun
+             
+             int days_ago = (3 - col) * 7 + (today_wday - row);
+             if (days_ago < 0) continue; // Future
+             
+             std::time_t cell_start = start_of_today - days_ago * 24 * 3600;
+             std::time_t cell_end = cell_start + 24 * 3600;
+             
+             int cell_focus_sec = 0;
+             for (const auto& s : cached_sessions_) {
+                 if (s.state == "completed" && s.started_at >= cell_start && s.started_at < cell_end) {
+                     cell_focus_sec += s.duration_sec;
+                 }
+             }
+             
+             ImU32 cell_color = IM_COL32(30, 30, 42, 255);
+             if (cell_focus_sec > 0) {
+                 if (cell_focus_sec < 1800)       cell_color = IM_COL32(13, 70, 100, 255);
+                 else if (cell_focus_sec < 7200)  cell_color = IM_COL32(13, 120, 180, 255);
+                 else                             cell_color = IM_COL32(13, 180, 240, 255);
+             }
+             
+             ImVec2 sq_min = ImVec2(grid_x + col * (square_sz + gap), grid_y + row * (square_sz + gap));
+             ImVec2 sq_max = ImVec2(sq_min.x + square_sz, sq_min.y + square_sz);
+             
+             h_draw->AddRectFilled(sq_min, sq_max, cell_color, 2.0f);
+             
+             // Hover check & Tooltip
+             ImVec2 m_pos = ImGui::GetMousePos();
+             if (m_pos.x >= sq_min.x && m_pos.x <= sq_max.x && m_pos.y >= sq_min.y && m_pos.y <= sq_max.y) {
+                 h_draw->AddRect(sq_min, sq_max, IM_COL32(255, 255, 255, 255), 2.0f, 0, 1.0f);
+                 ImGui::BeginTooltip();
+                 ImGui::Text("%s", to_date_string(cell_start).c_str());
+                 ImGui::Text("Focus Time: %s", format_duration(cell_focus_sec).c_str());
+                 ImGui::EndTooltip();
+             }
+         }
+     }
+     
+     // Draw legend
+     ImGui::SetCursorScreenPos(ImVec2(h_start.x + 100.0f, h_start.y + 4.0f));
+     ImGui::TextDisabled("Less"); ImGui::SameLine();
+     ImVec2 leg_pos = ImGui::GetCursorScreenPos();
+     leg_pos.y += 2.0f;
+     h_draw->AddRectFilled(ImVec2(leg_pos.x, leg_pos.y), ImVec2(leg_pos.x + 8, leg_pos.y + 8), IM_COL32(30, 30, 42, 255), 1.0f);
+     h_draw->AddRectFilled(ImVec2(leg_pos.x + 12, leg_pos.y), ImVec2(leg_pos.x + 20, leg_pos.y + 8), IM_COL32(13, 70, 100, 255), 1.0f);
+     h_draw->AddRectFilled(ImVec2(leg_pos.x + 24, leg_pos.y), ImVec2(leg_pos.x + 32, leg_pos.y + 8), IM_COL32(13, 120, 180, 255), 1.0f);
+     h_draw->AddRectFilled(ImVec2(leg_pos.x + 36, leg_pos.y), ImVec2(leg_pos.x + 44, leg_pos.y + 8), IM_COL32(13, 180, 240, 255), 1.0f);
+     ImGui::Dummy(ImVec2(50, 8)); ImGui::SameLine();
+     ImGui::TextDisabled("More");
+     
+     ImGui::EndChild();
+     
+     ImGui::SameLine();
+     
+     // RIGHT: Streaks & Productivity Insights
+     ImGui::BeginChild("InsightsPanel", ImVec2(col_w_panel, 130), true);
+     ImGui::TextDisabled("STREAKS & PRODUCTIVITY INSIGHTS");
+     ImGui::Spacing();
+     
+     ImGui::BeginGroup();
+     ImGui::Text("Current Streak:"); ImGui::SameLine();
+     ImGui::TextColored(ImVec4(0.10f, 0.72f, 0.50f, 1.00f), "%d days", current_streak);
+     ImGui::Text("Longest Streak:"); ImGui::SameLine();
+     ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "%d days", longest_streak);
+     ImGui::Text("Total Focus Days:"); ImGui::SameLine();
+     ImGui::TextColored(ImVec4(0.80f, 0.40f, 0.90f, 1.00f), "%d days", total_active_days);
+     ImGui::EndGroup();
+     
+     ImGui::SameLine(col_w_panel * 0.45f);
+     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+     ImGui::SameLine(col_w_panel * 0.48f);
+     
+     ImGui::BeginGroup();
+     ImGui::PushTextWrapPos(col_w_panel * 0.95f);
+     ImGui::TextDisabled("INSIGHT:");
+     if (completion_rate < 80.0f) {
+         ImGui::Text("Multiple interruptions detected. Try 'Always on Top' floating clock to minimize tab switching!");
+     } else if (completed_count == 0) {
+         ImGui::Text("Kickoff your focus session! Launch the floating stopwatch to track open-ended work.");
+     } else {
+         ImGui::Text("Excellent focus rate (%.0f%%) today! Take deep breath breaks in between.", completion_rate);
+     }
+     ImGui::PopTextWrapPos();
+     ImGui::EndGroup();
+     
+     ImGui::EndChild();
+     ImGui::EndGroup();
+ }
 
 // ─── Time Tracking View ──────────────────────────────────────────────────────
 void GuiManager::render_time_tracking() {
@@ -667,31 +1029,34 @@ void GuiManager::render_time_tracking() {
         
         // Render item select box
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.12f, 0.12f, 0.12f, 1.00f));
-        bool clicked = ImGui::Selectable(label_id.c_str(), selected, 0, ImVec2(avail_card.x, 36.0f));
+        bool clicked = ImGui::Selectable(label_id.c_str(), selected, 0, ImVec2(avail_card.x, 44.0f));
         ImGui::PopStyleColor();
 
         // Draw left status accent border (Green = Completed, Red = Interrupted)
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         ImU32 status_color = (session.state == "completed") ? IM_COL32(46, 125, 50, 255) : IM_COL32(198, 40, 40, 255);
-        draw_list->AddRectFilled(p_min, ImVec2(p_min.x + 4.0f, p_min.y + 36.0f), status_color);
+        draw_list->AddRectFilled(p_min, ImVec2(p_min.x + 4.0f, p_min.y + 44.0f), status_color);
 
-        // Draw text on card overlay
-        draw_list->AddText(ImVec2(p_min.x + 12.0f, p_min.y + 10.0f), IM_COL32(240, 240, 240, 255), session.task_name.c_str());
+        // Draw text on card overlay (task name and time range)
+        draw_list->AddText(ImVec2(p_min.x + 12.0f, p_min.y + 6.0f), IM_COL32(240, 240, 240, 255), session.task_name.c_str());
+        
+        std::string time_range = format_time_range(session.started_at, session.ended_at);
+        draw_list->AddText(ImVec2(p_min.x + 12.0f, p_min.y + 24.0f), IM_COL32(160, 160, 160, 255), time_range.c_str());
         
         // Tags Pill
         if (!session.tags.empty()) {
             ImVec2 text_sz = ImGui::CalcTextSize(session.task_name.c_str());
             ImVec2 tag_text_sz = ImGui::CalcTextSize(session.tags.c_str());
-            ImVec2 pill_pos = ImVec2(p_min.x + 20.0f + text_sz.x, p_min.y + 9.0f);
+            ImVec2 pill_pos = ImVec2(p_min.x + 20.0f + text_sz.x, p_min.y + 5.0f);
             float pill_width = tag_text_sz.x + 12.0f;
-            draw_list->AddRectFilled(pill_pos, ImVec2(pill_pos.x + pill_width, pill_pos.y + 18.0f), IM_COL32(0, 120, 212, 100), 3.0f);
-            draw_list->AddText(ImVec2(pill_pos.x + 6.0f, pill_pos.y + 2.0f), IM_COL32(180, 210, 255, 255), session.tags.c_str());
+            draw_list->AddRectFilled(pill_pos, ImVec2(pill_pos.x + pill_width, pill_pos.y + 16.0f), IM_COL32(0, 120, 212, 100), 3.0f);
+            draw_list->AddText(ImVec2(pill_pos.x + 6.0f, pill_pos.y + 1.0f), IM_COL32(180, 210, 255, 255), session.tags.c_str());
         }
 
-        // Time and Duration
+        // Duration (centered vertically)
         std::string dur = format_duration(session.duration_sec);
         ImVec2 dur_sz = ImGui::CalcTextSize(dur.c_str());
-        draw_list->AddText(ImVec2(p_min.x + avail_card.x - dur_sz.x - 12.0f, p_min.y + 10.0f), IM_COL32(200, 200, 200, 255), dur.c_str());
+        draw_list->AddText(ImVec2(p_min.x + avail_card.x - dur_sz.x - 12.0f, p_min.y + 14.0f), IM_COL32(200, 200, 200, 255), dur.c_str());
 
         // Context right-click menu
         std::string popup_name = "SessionContextPopup_" + std::to_string(session.id);
@@ -729,6 +1094,9 @@ void GuiManager::render_time_tracking() {
 #endif
             start_h_ = tm_val.tm_hour;
             start_m_ = tm_val.tm_min;
+            edit_year_ = tm_val.tm_year + 1900;
+            edit_month_ = tm_val.tm_mon + 1;
+            edit_day_ = tm_val.tm_mday;
             
             std::time_t end_t = session.ended_at;
 #ifdef _WIN32
@@ -777,35 +1145,70 @@ void GuiManager::render_details_panel() {
     ImGui::InputTextMultiline("##Details", edit_details_, sizeof(edit_details_), ImVec2(0, 80));
     ImGui::Spacing();
 
+    // Date Inputs
+    ImGui::Text("Date (YYYY-MM-DD):");
+    ImGui::PushItemWidth(55);
+    if (ImGui::InputInt("##Year", &edit_year_, 0, 0)) {
+        edit_year_ = std::clamp(edit_year_, 2020, 2100);
+    }
+    ImGui::SameLine();
+    ImGui::PushItemWidth(35);
+    if (ImGui::InputInt("##Month", &edit_month_, 0, 0)) {
+        edit_month_ = std::clamp(edit_month_, 1, 12);
+    }
+    ImGui::SameLine();
+    if (ImGui::InputInt("##Day", &edit_day_, 0, 0)) {
+        edit_day_ = std::clamp(edit_day_, 1, 31);
+    }
+    ImGui::PopItemWidth();
+    ImGui::Spacing();
+
     // Time Pickers
-    ImGui::Text("Start time:");
-    ImGui::PushItemWidth(50);
-    ImGui::InputInt("h##start", &start_h_); ImGui::SameLine();
-    ImGui::InputInt("m##start", &start_m_);
+    ImGui::Text("Start Time (HH:MM):");
+    ImGui::PushItemWidth(35);
+    ImGui::InputInt("h##start", &start_h_, 0, 0); ImGui::SameLine();
+    ImGui::Text(":"); ImGui::SameLine();
+    ImGui::InputInt("m##start", &start_m_, 0, 0);
     ImGui::PopItemWidth();
     start_h_ = std::clamp(start_h_, 0, 23);
     start_m_ = std::clamp(start_m_, 0, 59);
+
+    // Resolve start datetime string
+    std::tm tm_start = {};
+    tm_start.tm_year = edit_year_ - 1900;
+    tm_start.tm_mon = edit_month_ - 1;
+    tm_start.tm_mday = edit_day_;
+    tm_start.tm_hour = start_h_;
+    tm_start.tm_min = start_m_;
+    tm_start.tm_sec = 0;
+    tm_start.tm_isdst = -1;
+    std::time_t start_time_t = std::mktime(&tm_start);
+    ImGui::TextDisabled("Start: %s", to_datetime_string(start_time_t).c_str());
     ImGui::Spacing();
 
-    ImGui::Text("End time:");
-    ImGui::PushItemWidth(50);
-    ImGui::InputInt("h##end", &end_h_); ImGui::SameLine();
-    ImGui::InputInt("m##end", &end_m_);
+    ImGui::Text("End Time (HH:MM):");
+    ImGui::PushItemWidth(35);
+    ImGui::InputInt("h##end", &end_h_, 0, 0); ImGui::SameLine();
+    ImGui::Text(":"); ImGui::SameLine();
+    ImGui::InputInt("m##end", &end_m_, 0, 0);
     ImGui::PopItemWidth();
     end_h_ = std::clamp(end_h_, 0, 23);
     end_m_ = std::clamp(end_m_, 0, 59);
+
+    // Resolve end datetime string (checking overnight wrapping)
+    std::tm tm_end = tm_start;
+    tm_end.tm_hour = end_h_;
+    tm_end.tm_min = end_m_;
+    std::time_t end_time_t = std::mktime(&tm_end);
+    if (end_time_t < start_time_t) {
+        end_time_t += 24 * 3600; // wrapped to next day
+    }
+    ImGui::TextDisabled("End:   %s", to_datetime_string(end_time_t).c_str());
     ImGui::Spacing();
 
     // Dynamic duration preview
-    int preview_sec = 0;
-    int start_total = start_h_ * 60 + start_m_;
-    int end_total = end_h_ * 60 + end_m_;
-    if (end_total >= start_total) {
-        preview_sec = (end_total - start_total) * 60;
-    } else {
-        preview_sec = ((1440 - start_total) + end_total) * 60;
-    }
-    std::string preview_text = "Duration: " + format_duration(preview_sec);
+    int preview_sec = static_cast<int>(end_time_t - start_time_t);
+    std::string preview_text = "Total Time: " + format_duration(preview_sec);
     ImGui::TextColored(ImVec4(0.00f, 0.75f, 1.00f, 1.00f), "%s", preview_text.c_str());
     ImGui::Spacing();
 
@@ -849,15 +1252,14 @@ void GuiManager::save_current_details() {
     entry.details   = edit_details_;
 
     // Calculate dates
-    std::tm tm_start;
-#ifdef _WIN32
-    localtime_s(&tm_start, &edit_started_at_);
-#else
-    localtime_r(&edit_started_at_, &tm_start);
-#endif
+    std::tm tm_start = {};
+    tm_start.tm_year = edit_year_ - 1900;
+    tm_start.tm_mon  = edit_month_ - 1;
+    tm_start.tm_mday = edit_day_;
     tm_start.tm_hour = start_h_;
     tm_start.tm_min  = start_m_;
     tm_start.tm_sec  = 0;
+    tm_start.tm_isdst = -1;
     std::time_t new_start = std::mktime(&tm_start);
 
     std::tm tm_end = tm_start;
@@ -890,242 +1292,461 @@ void GuiManager::save_current_details() {
 // ─── Pomodoro View (with custom drawing) ─────────────────────────────────────
 void GuiManager::render_pomodoro() {
     ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
-    ImGui::PushFont(header_font);
-    ImGui::Text("Pomodoro");
-    ImGui::PopFont();
+    
+    // Top Row: Mode Selection and Mini View button
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Active Mode:"); ImGui::SameLine();
+    ImGui::RadioButton("Pomodoro Timer", &timer_mode_, 0); ImGui::SameLine();
+    ImGui::RadioButton("Task Stopwatch", &timer_mode_, 1);
+
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 90.0f);
+    if (ImGui::Button("Mini View", ImVec2(90, 24))) {
+        mini_mode_ = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Switch to compact floating window");
+    }
+
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Horizontal Layout: Left = inputs & buttons, Right = Large circular timer widget
     ImVec2 avail = ImGui::GetContentRegionAvail();
     float col_width = avail.x * 0.5f;
 
-    ImGui::BeginGroup(); // Left column (Controls)
-    
-    ImGui::Text("Task Name:");
-    ImGui::SetNextItemWidth(col_width - 40.0f);
-    ImGui::InputTextWithHint("##TaskInput", "What are you working on?", task_name_input_, sizeof(task_name_input_));
-    ImGui::Spacing();
-    
-    // Autocomplete Suggestions
+    // --- Autocomplete Suggestions Helper (used by both modes) ---
     std::vector<std::string> suggestions;
     for (const auto& s : cached_sessions_) {
         if (suggestions.size() >= 5) break;
-        if (s.task_name.empty() || s.task_name == "Manual Entry" || s.task_name == "Focus Session") continue;
+        if (s.task_name.empty() || s.task_name == "Manual Entry" || s.task_name == "Focus Session" || s.task_name == "Stopwatch Session") continue;
         if (std::find(suggestions.begin(), suggestions.end(), s.task_name) == suggestions.end()) {
             suggestions.push_back(s.task_name);
         }
     }
-    if (!suggestions.empty()) {
-        ImGui::TextDisabled("Recent tasks:");
+
+    const char* quick_tags[] = { "Work", "Study", "Coding", "Meeting", "Personal" };
+
+    if (timer_mode_ == 0) {
+        // ─── POMODORO TIMER MODE ───
+        TimerState state = engine_->state();
+
+        ImGui::BeginGroup(); // Left column (Controls)
+        ImGui::Text("Task Name:");
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        ImGui::InputTextWithHint("##TaskInput", "What are you working on?", task_name_input_, sizeof(task_name_input_));
+        ImGui::Spacing();
+        
+        if (!suggestions.empty()) {
+            ImGui::TextDisabled("Recent tasks:");
+            ImGui::Indent(4.0f);
+            for (size_t i = 0; i < suggestions.size(); ++i) {
+                if (i > 0) ImGui::SameLine();
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+                if (ImGui::Button((suggestions[i] + "##pomo").c_str())) {
+                    strncpy_s(task_name_input_, suggestions[i].c_str(), _TRUNCATE);
+                }
+                ImGui::PopStyleVar();
+            }
+            ImGui::Unindent(4.0f);
+            ImGui::Spacing();
+        }
+
+        ImGui::Text("Tags:");
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        ImGui::InputTextWithHint("##TagsInput", "Category tags (comma-separated)...", tags_input_, sizeof(tags_input_));
+        ImGui::Spacing();
+
+        ImGui::TextDisabled("Quick tags:");
         ImGui::Indent(4.0f);
-        for (size_t i = 0; i < suggestions.size(); ++i) {
+        for (size_t i = 0; i < 5; ++i) {
             if (i > 0) ImGui::SameLine();
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
-            if (ImGui::Button(suggestions[i].c_str())) {
-                strncpy_s(task_name_input_, suggestions[i].c_str(), _TRUNCATE);
+            if (ImGui::Button((std::string(quick_tags[i]) + "##pomo_tag").c_str())) {
+                std::string current_tags = tags_input_;
+                if (current_tags.empty()) {
+                    current_tags = quick_tags[i];
+                } else {
+                    size_t pos = current_tags.find(quick_tags[i]);
+                    if (pos == std::string::npos) {
+                        if (current_tags.back() == ',' || current_tags.back() == ' ') {
+                            if (current_tags.back() == ',') current_tags += " ";
+                            current_tags += quick_tags[i];
+                        } else {
+                            current_tags += ", ";
+                            current_tags += quick_tags[i];
+                        }
+                    }
+                }
+                strncpy_s(tags_input_, current_tags.c_str(), _TRUNCATE);
             }
             ImGui::PopStyleVar();
         }
         ImGui::Unindent(4.0f);
         ImGui::Spacing();
-    }
 
-    ImGui::Text("Tags:");
-    ImGui::SetNextItemWidth(col_width - 40.0f);
-    ImGui::InputTextWithHint("##TagsInput", "Category tags (comma-separated)...", tags_input_, sizeof(tags_input_));
-    ImGui::Spacing();
+        ImGui::Text("Details / Notes:");
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        ImGui::InputTextWithHint("##DetailsInput", "Rich session notes...", details_input_, sizeof(details_input_));
+        ImGui::Spacing();
+        ImGui::Spacing();
 
-    // Quick tag selector buttons
-    const char* quick_tags[] = { "Work", "Study", "Coding", "Meeting", "Personal" };
-    ImGui::TextDisabled("Quick tags:");
-    ImGui::Indent(4.0f);
-    for (size_t i = 0; i < 5; ++i) {
-        if (i > 0) ImGui::SameLine();
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
-        if (ImGui::Button(quick_tags[i])) {
-            std::string current_tags = tags_input_;
-            if (current_tags.empty()) {
-                current_tags = quick_tags[i];
+        if (state == TimerState::Idle) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.00f, 0.47f, 0.83f, 1.00f));
+            if (ImGui::Button("Start Focus", ImVec2(col_width - 40.0f, 40.0f))) {
+                engine_->start(task_name_input_);
+                engine_->set_active_tags_and_details(tags_input_, details_input_);
+            }
+            ImGui::PopStyleColor();
+        } else {
+            if (state == TimerState::Paused) {
+                if (ImGui::Button("Resume Focus", ImVec2(col_width - 40.0f, 32.0f))) {
+                    engine_->resume();
+                }
             } else {
-                size_t pos = current_tags.find(quick_tags[i]);
-                if (pos == std::string::npos) {
-                    if (current_tags.back() == ',' || current_tags.back() == ' ') {
-                        if (current_tags.back() == ',') current_tags += " ";
-                        current_tags += quick_tags[i];
-                    } else {
-                        current_tags += ", ";
-                        current_tags += quick_tags[i];
-                    }
+                if (ImGui::Button("Pause", ImVec2(col_width - 40.0f, 32.0f))) {
+                    engine_->pause();
                 }
             }
-            strncpy_s(tags_input_, current_tags.c_str(), _TRUNCATE);
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            if (ImGui::Button("Stop Focus (Log Session)", ImVec2(col_width - 40.0f, 32.0f))) {
+                engine_->stop();
+                tags_input_[0] = '\0';
+                details_input_[0] = '\0';
+            }
+            ImGui::PopStyleColor(2);
         }
-        ImGui::PopStyleVar();
-    }
-    ImGui::Unindent(4.0f);
-    ImGui::Spacing();
+        ImGui::EndGroup();
 
-    ImGui::Text("Details / Notes:");
-    ImGui::SetNextItemWidth(col_width - 40.0f);
-    ImGui::InputTextWithHint("##DetailsInput", "Rich session notes...", details_input_, sizeof(details_input_));
-    ImGui::Spacing();
-    ImGui::Spacing();
+        ImGui::SameLine();
 
-    TimerState state = engine_->state();
+        // Right Column (Circular progress widget & settings below)
+        ImGui::BeginGroup();
+        ImGui::BeginChild("CircleWidget", ImVec2(0, 240), false);
+        ImVec2 center = ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 110.0f);
+        float radius = 80.0f;
 
-    // Quick Duration Setup (sliders)
-    if (state == TimerState::Idle) {
-        ImGui::Text("Quick Setup:");
-        
-        ImGui::SetNextItemWidth(col_width - 40.0f);
-        if (ImGui::SliderInt("Focus (min)", &focus_min_, 1, 60)) {
-            TimerConfig config = engine_->config();
-            config.focus_duration_sec = focus_min_ * 60;
-            engine_->set_config(config);
-            
-            // Sync and save configuration
-            config_.focus_duration_sec = focus_min_ * 60;
-            ConfigManager::save(config_, config_path_);
+        int total_duration = 1;
+        if (state == TimerState::Focusing || state == TimerState::Paused) {
+            total_duration = engine_->config().focus_duration_sec;
+        } else if (state == TimerState::ShortBreak) {
+            total_duration = engine_->config().short_break_sec;
+        } else if (state == TimerState::LongBreak) {
+            total_duration = engine_->config().long_break_sec;
         }
-        
-        ImGui::SetNextItemWidth(col_width - 40.0f);
-        if (ImGui::SliderInt("Break (min)", &short_break_min_, 1, 30)) {
-            TimerConfig config = engine_->config();
-            config.short_break_sec = short_break_min_ * 60;
-            engine_->set_config(config);
-            
-            // Sync and save configuration
-            config_.short_break_sec = short_break_min_ * 60;
-            ConfigManager::save(config_, config_path_);
+        float fraction = 1.0f - (static_cast<float>(engine_->remaining_sec()) / static_cast<float>(total_duration));
+        fraction = std::clamp(fraction, 0.0f, 1.0f);
+
+        int m = engine_->remaining_sec() / 60;
+        int s = engine_->remaining_sec() % 60;
+        char buf[32];
+        sprintf_s(buf, "%02d:%02d", m, s);
+        std::string text = buf;
+
+        ImU32 ring_col = IM_COL32(180, 180, 180, 255); // grey
+        if (state == TimerState::Focusing)     ring_col = IM_COL32(46, 125, 50, 255);  // green
+        else if (state == TimerState::ShortBreak) ring_col = IM_COL32(21, 101, 192, 255); // blue
+        else if (state == TimerState::LongBreak)  ring_col = IM_COL32(106, 27, 154, 255); // purple
+        else if (state == TimerState::Paused)     ring_col = IM_COL32(239, 108, 0, 255);   // orange
+
+        float pulse_thickness = 5.0f;
+        ImU32 arc_col = ring_col;
+        if (state == TimerState::Focusing) {
+            float t = static_cast<float>(ImGui::GetTime());
+            float pulse = sinf(t * 2.5f);
+            float pulse_norm = (pulse + 1.0f) * 0.5f;
+            pulse_thickness = 4.5f + pulse_norm * 2.0f;
+            int alpha = static_cast<int>(180.0f + pulse_norm * 75.0f);
+            arc_col = IM_COL32(46, 125, 50, alpha);
+        } else if (state == TimerState::Paused) {
+            float t = static_cast<float>(ImGui::GetTime());
+            float pulse = sinf(t * 4.0f);
+            float pulse_norm = (pulse + 1.0f) * 0.5f;
+            int alpha = static_cast<int>(100.0f + pulse_norm * 155.0f);
+            arc_col = IM_COL32(239, 108, 0, alpha);
+        } else if (state == TimerState::ShortBreak || state == TimerState::LongBreak) {
+            float t = static_cast<float>(ImGui::GetTime());
+            float pulse = sinf(t * 1.5f);
+            float pulse_norm = (pulse + 1.0f) * 0.5f;
+            pulse_thickness = 4.8f + pulse_norm * 1.0f;
+            int alpha = static_cast<int>(200.0f + pulse_norm * 55.0f);
+            arc_col = (state == TimerState::ShortBreak) ? IM_COL32(21, 101, 192, alpha) : IM_COL32(106, 27, 154, alpha);
         }
+
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImVec2 screen_center = ImVec2(ImGui::GetCursorScreenPos().x + center.x, ImGui::GetCursorScreenPos().y + center.y);
+        draw_list->AddCircle(screen_center, radius, IM_COL32(43, 43, 43, 255), 64, 5.0f);
+
+        if (fraction > 0.001f) {
+            const float IM_PI = 3.1415926535f;
+            float start_angle = -IM_PI / 2.0f;
+            float end_angle = start_angle + fraction * 2.0f * IM_PI;
+            draw_list->PathClear();
+            draw_list->PathArcTo(screen_center, radius, start_angle, end_angle, 64);
+            draw_list->PathStroke(arc_col, 0, pulse_thickness);
+        }
+
+        ImFont* count_font = font_large_ ? font_large_ : ImGui::GetIO().Fonts->Fonts[0];
+        ImGui::PushFont(count_font);
+        ImVec2 text_sz = ImGui::CalcTextSize(text.c_str());
+        draw_list->AddText(count_font, count_font->FontSize, ImVec2(screen_center.x - text_sz.x * 0.5f, screen_center.y - text_sz.y * 0.5f - 10.0f), IM_COL32(245, 245, 245, 255), text.c_str());
+        ImGui::PopFont();
+
+        std::string state_text = to_string(state);
+        ImVec2 st_sz = ImGui::CalcTextSize(state_text.c_str());
+        draw_list->AddText(ImVec2(screen_center.x - st_sz.x * 0.5f, screen_center.y + 25.0f), IM_COL32(180, 180, 180, 255), state_text.c_str());
+        ImGui::EndChild();
+
+        // Pomodoro durations configuration below the clock (requested)
+        if (ImGui::CollapsingHeader("Timer Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Spacing();
+            if (state == TimerState::Idle) {
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::SliderInt("Focus duration##cfg", &focus_min_, 1, 60, "%d min")) {
+                    config_.focus_duration_sec = focus_min_ * 60;
+                    ConfigManager::save(config_, config_path_);
+                    TimerConfig engine_cfg = engine_->config();
+                    engine_cfg.focus_duration_sec = config_.focus_duration_sec;
+                    engine_->set_config(engine_cfg);
+                }
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::SliderInt("Short break##cfg", &short_break_min_, 1, 30, "%d min")) {
+                    config_.short_break_sec = short_break_min_ * 60;
+                    ConfigManager::save(config_, config_path_);
+                    TimerConfig engine_cfg = engine_->config();
+                    engine_cfg.short_break_sec = config_.short_break_sec;
+                    engine_->set_config(engine_cfg);
+                }
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::SliderInt("Long break##cfg", &long_break_min_, 1, 60, "%d min")) {
+                    config_.long_break_sec = long_break_min_ * 60;
+                    ConfigManager::save(config_, config_path_);
+                    TimerConfig engine_cfg = engine_->config();
+                    engine_cfg.long_break_sec = config_.long_break_sec;
+                    engine_->set_config(engine_cfg);
+                }
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::InputInt("Sessions before long##cfg", &sessions_before_long_)) {
+                    sessions_before_long_ = std::clamp(sessions_before_long_, 1, 20);
+                    config_.sessions_before_long_break = sessions_before_long_;
+                    ConfigManager::save(config_, config_path_);
+                    TimerConfig engine_cfg = engine_->config();
+                    engine_cfg.sessions_before_long_break = config_.sessions_before_long_break;
+                    engine_->set_config(engine_cfg);
+                }
+            } else {
+                ImGui::TextDisabled("Timer settings locked while running.");
+            }
+        }
+
+        // Sub-tasks checklist
         ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Spacing();
-    }
-
-    if (state == TimerState::Idle) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.00f, 0.47f, 0.83f, 1.00f));
-        if (ImGui::Button("Start Focus", ImVec2(col_width - 40.0f, 40.0f))) {
-            engine_->start(task_name_input_);
-            engine_->set_active_tags_and_details(tags_input_, details_input_);
+        
+        ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Focus Sub-Tasks Checklist");
+        ImGui::Spacing();
+        
+        ImGui::SetNextItemWidth(140);
+        ImGui::InputTextWithHint("##new_todo", "New sub-task...", new_todo_input_, sizeof(new_todo_input_));
+        ImGui::SameLine();
+        if (ImGui::Button("+##add_todo")) {
+            if (new_todo_input_[0] != '\0') {
+                focus_todos_.push_back(new_todo_input_);
+                focus_todos_done_.push_back(false);
+                new_todo_input_[0] = '\0';
+            }
         }
-        ImGui::PopStyleColor();
+        
+        ImGui::BeginChild("TodoList", ImVec2(0, 95), true);
+        for (size_t i = 0; i < focus_todos_.size(); ++i) {
+            bool done = focus_todos_done_[i];
+            std::string check_lbl = focus_todos_[i] + "##check_" + std::to_string(i);
+            if (ImGui::Checkbox(check_lbl.c_str(), &done)) {
+                focus_todos_done_[i] = done;
+            }
+            if (ImGui::BeginPopupContextItem(("todo_ctx_" + std::to_string(i)).c_str())) {
+                if (ImGui::MenuItem("Remove task")) {
+                    focus_todos_.erase(focus_todos_.begin() + i);
+                    focus_todos_done_.erase(focus_todos_done_.begin() + i);
+                    i--;
+                }
+                ImGui::EndPopup();
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::EndGroup();
+
     } else {
-        if (state == TimerState::Paused) {
-            if (ImGui::Button("Resume Focus", ImVec2(col_width - 40.0f, 32.0f))) {
-                engine_->resume();
+        // ─── STOPWATCH COUNT-UP MODE ───
+        ImGui::BeginGroup(); // Left Column (Controls)
+        ImGui::Text("Task Name:");
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        ImGui::InputTextWithHint("##StopwatchTask", "What task are you tracking?", stopwatch_task_name_, sizeof(stopwatch_task_name_));
+        ImGui::Spacing();
+
+        if (!suggestions.empty()) {
+            ImGui::TextDisabled("Recent tasks:");
+            ImGui::Indent(4.0f);
+            for (size_t i = 0; i < suggestions.size(); ++i) {
+                if (i > 0) ImGui::SameLine();
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+                if (ImGui::Button((suggestions[i] + "##sw").c_str())) {
+                    strncpy_s(stopwatch_task_name_, suggestions[i].c_str(), _TRUNCATE);
+                }
+                ImGui::PopStyleVar();
+            }
+            ImGui::Unindent(4.0f);
+            ImGui::Spacing();
+        }
+
+        ImGui::Text("Tags:");
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        ImGui::InputTextWithHint("##StopwatchTags", "Category tags (comma-separated)...", stopwatch_tags_, sizeof(stopwatch_tags_));
+        ImGui::Spacing();
+
+        ImGui::TextDisabled("Quick tags:");
+        ImGui::Indent(4.0f);
+        for (size_t i = 0; i < 5; ++i) {
+            if (i > 0) ImGui::SameLine();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+            if (ImGui::Button((std::string(quick_tags[i]) + "##sw_tag").c_str())) {
+                std::string current_tags = stopwatch_tags_;
+                if (current_tags.empty()) {
+                    current_tags = quick_tags[i];
+                } else {
+                    size_t pos = current_tags.find(quick_tags[i]);
+                    if (pos == std::string::npos) {
+                        if (current_tags.back() == ',' || current_tags.back() == ' ') {
+                            if (current_tags.back() == ',') current_tags += " ";
+                            current_tags += quick_tags[i];
+                        } else {
+                            current_tags += ", ";
+                            current_tags += quick_tags[i];
+                        }
+                    }
+                }
+                strncpy_s(stopwatch_tags_, current_tags.c_str(), _TRUNCATE);
+            }
+            ImGui::PopStyleVar();
+        }
+        ImGui::Unindent(4.0f);
+        ImGui::Spacing();
+
+        ImGui::Text("Details / Notes:");
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        ImGui::InputTextWithHint("##StopwatchDetails", "Rich session notes...", stopwatch_details_, sizeof(stopwatch_details_));
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        if (!stopwatch_active_) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.06f, 0.62f, 0.45f, 1.00f));
+            if (ImGui::Button("Start Stopwatch", ImVec2(col_width - 40.0f, 32.0f))) {
+                stopwatch_active_ = true;
+                stopwatch_paused_ = false;
+                stopwatch_elapsed_sec_ = 0;
+                stopwatch_last_time_ = std::time(nullptr);
+            }
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+            if (ImGui::Button("Launch Floating Stopwatch", ImVec2(col_width - 40.0f, 32.0f))) {
+                stopwatch_active_ = true;
+                stopwatch_paused_ = false;
+                stopwatch_elapsed_sec_ = 0;
+                stopwatch_last_time_ = std::time(nullptr);
+                mini_mode_ = true;
             }
         } else {
-            if (ImGui::Button("Pause", ImVec2(col_width - 40.0f, 32.0f))) {
-                engine_->pause();
+            if (stopwatch_paused_) {
+                if (ImGui::Button("Resume Stopwatch", ImVec2(col_width - 40.0f, 32.0f))) {
+                    stopwatch_paused_ = false;
+                    stopwatch_last_time_ = std::time(nullptr);
+                }
+            } else {
+                if (ImGui::Button("Pause Stopwatch", ImVec2(col_width - 40.0f, 32.0f))) {
+                    stopwatch_paused_ = true;
+                }
             }
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            if (ImGui::Button("Stop & Log Task Session", ImVec2(col_width - 40.0f, 32.0f))) {
+                // Log session
+                TaskEntry entry;
+                entry.task_name = stopwatch_task_name_[0] == '\0' ? "Stopwatch Session" : stopwatch_task_name_;
+                entry.tags = stopwatch_tags_;
+                entry.details = stopwatch_details_;
+                entry.started_at = std::time(nullptr) - stopwatch_elapsed_sec_;
+                entry.ended_at = std::time(nullptr);
+                entry.duration_sec = stopwatch_elapsed_sec_;
+                entry.state = "completed";
+                
+                db_->log_session(entry);
+                
+                // Reload
+                auto list = db_->get_recent_sessions(100);
+                if (list.is_ok()) cached_sessions_ = list.value();
+                
+                stopwatch_active_ = false;
+                stopwatch_paused_ = false;
+                stopwatch_elapsed_sec_ = 0;
+            }
+            ImGui::PopStyleColor(2);
         }
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("Stop Focus (Log Session)", ImVec2(col_width - 40.0f, 32.0f))) {
-            engine_->stop();
-            tags_input_[0] = '\0';
-            details_input_[0] = '\0';
+        ImGui::EndGroup();
+
+        ImGui::SameLine();
+
+        // Right Column (Spinning count-up stopwatch clock)
+        ImGui::BeginGroup();
+        ImGui::BeginChild("StopwatchCircleWidget", ImVec2(0, 240), false);
+        ImVec2 center = ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 110.0f);
+        float radius = 80.0f;
+        
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImVec2 screen_center = ImVec2(ImGui::GetCursorScreenPos().x + center.x, ImGui::GetCursorScreenPos().y + center.y);
+        
+        // Draw track circle
+        draw_list->AddCircle(screen_center, radius, IM_COL32(43, 43, 43, 255), 64, 5.0f);
+        
+        // Draw spinning indicator arc
+        if (stopwatch_active_ && !stopwatch_paused_) {
+            float t = static_cast<float>(ImGui::GetTime());
+            float start_angle = t * 3.0f; // spinning speed
+            float end_angle = start_angle + 1.2f; // arc length
+            draw_list->PathClear();
+            draw_list->PathArcTo(screen_center, radius, start_angle, end_angle, 32);
+            draw_list->PathStroke(IM_COL32(13, 148, 136, 255), 0, 5.0f); // Teal spinning arc
+        } else if (stopwatch_active_ && stopwatch_paused_) {
+            // Draw solid orange ring
+            draw_list->AddCircle(screen_center, radius, IM_COL32(239, 108, 0, 255), 64, 5.0f);
         }
-        ImGui::PopStyleColor(2);
+        
+        int h = stopwatch_elapsed_sec_ / 3600;
+        int m = (stopwatch_elapsed_sec_ % 3600) / 60;
+        int s = stopwatch_elapsed_sec_ % 60;
+        char time_str[64];
+        sprintf_s(time_str, "%02d:%02d:%02d", h, m, s);
+        
+        ImFont* count_font = font_large_ ? font_large_ : ImGui::GetIO().Fonts->Fonts[0];
+        ImGui::PushFont(count_font);
+        ImVec2 text_sz = ImGui::CalcTextSize(time_str);
+        draw_list->AddText(count_font, count_font->FontSize - 8.0f, ImVec2(screen_center.x - text_sz.x * 0.5f, screen_center.y - text_sz.y * 0.5f - 10.0f), IM_COL32(245, 245, 245, 255), time_str);
+        ImGui::PopFont();
+        
+        std::string st_text = stopwatch_active_ ? (stopwatch_paused_ ? "PAUSED" : "STOPWATCH ACTIVE") : "STOPWATCH READY";
+        ImVec2 st_sz = ImGui::CalcTextSize(st_text.c_str());
+        draw_list->AddText(ImVec2(screen_center.x - st_sz.x * 0.5f, screen_center.y + 25.0f), stopwatch_paused_ ? IM_COL32(239, 108, 0, 255) : IM_COL32(13, 148, 136, 255), st_text.c_str());
+        ImGui::EndChild();
+
+        // Stopwatch Tip card to fill right column bottom
+        if (ImGui::CollapsingHeader("Stopwatch Info", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Spacing();
+            ImGui::TextWrapped("The count-up stopwatch is ideal for open-ended tasks where you want to track total billable hours without set break limits.");
+        }
+        ImGui::EndGroup();
     }
-    ImGui::EndGroup();
-
-    ImGui::SameLine();
-
-    // Right Column (Circular progress widget)
-    ImGui::BeginChild("CircleWidget", ImVec2(0, 300), false);
-    ImVec2 center = ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 120.0f);
-    float radius = 80.0f;
-
-    // Calculate fraction
-    int total_duration = 1;
-    if (state == TimerState::Focusing || state == TimerState::Paused) {
-        total_duration = engine_->config().focus_duration_sec;
-    } else if (state == TimerState::ShortBreak) {
-        total_duration = engine_->config().short_break_sec;
-    } else if (state == TimerState::LongBreak) {
-        total_duration = engine_->config().long_break_sec;
-    }
-    float fraction = 1.0f - (static_cast<float>(engine_->remaining_sec()) / static_cast<float>(total_duration));
-    fraction = std::clamp(fraction, 0.0f, 1.0f);
-
-    // Format remaining time text
-    int m = engine_->remaining_sec() / 60;
-    int s = engine_->remaining_sec() % 60;
-    std::stringstream ss;
-    ss << std::setw(2) << std::setfill('0') << m << ":" << std::setw(2) << std::setfill('0') << s;
-    std::string text = ss.str();
-
-    // Determine circular ring color based on state
-    ImU32 ring_col = IM_COL32(180, 180, 180, 255); // grey
-    if (state == TimerState::Focusing)     ring_col = IM_COL32(46, 125, 50, 255);  // green
-    else if (state == TimerState::ShortBreak) ring_col = IM_COL32(21, 101, 192, 255); // blue
-    else if (state == TimerState::LongBreak)  ring_col = IM_COL32(106, 27, 154, 255); // purple
-    else if (state == TimerState::Paused)     ring_col = IM_COL32(239, 108, 0, 255);   // orange
-
-    float pulse_thickness = 5.0f;
-    ImU32 arc_col = ring_col;
-    if (state == TimerState::Focusing) {
-        float t = static_cast<float>(ImGui::GetTime());
-        float pulse = sinf(t * 2.5f);
-        float pulse_norm = (pulse + 1.0f) * 0.5f;
-        pulse_thickness = 4.5f + pulse_norm * 2.0f;
-        int alpha = static_cast<int>(180.0f + pulse_norm * 75.0f);
-        arc_col = IM_COL32(46, 125, 50, alpha);
-    } else if (state == TimerState::Paused) {
-        float t = static_cast<float>(ImGui::GetTime());
-        float pulse = sinf(t * 4.0f);
-        float pulse_norm = (pulse + 1.0f) * 0.5f;
-        int alpha = static_cast<int>(100.0f + pulse_norm * 155.0f);
-        arc_col = IM_COL32(239, 108, 0, alpha);
-    } else if (state == TimerState::ShortBreak) {
-        float t = static_cast<float>(ImGui::GetTime());
-        float pulse = sinf(t * 1.5f);
-        float pulse_norm = (pulse + 1.0f) * 0.5f;
-        pulse_thickness = 4.8f + pulse_norm * 1.0f;
-        int alpha = static_cast<int>(200.0f + pulse_norm * 55.0f);
-        arc_col = IM_COL32(21, 101, 192, alpha);
-    } else if (state == TimerState::LongBreak) {
-        float t = static_cast<float>(ImGui::GetTime());
-        float pulse = sinf(t * 1.0f);
-        float pulse_norm = (pulse + 1.0f) * 0.5f;
-        pulse_thickness = 4.8f + pulse_norm * 1.0f;
-        int alpha = static_cast<int>(200.0f + pulse_norm * 55.0f);
-        arc_col = IM_COL32(106, 27, 154, alpha);
-    }
-
-    // Draw using ImDrawList PathArcTo & PathStroke
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    ImVec2 screen_center = ImVec2(ImGui::GetCursorScreenPos().x + center.x, ImGui::GetCursorScreenPos().y + center.y);
-
-    // Draw background track ring
-    draw_list->AddCircle(screen_center, radius, IM_COL32(43, 43, 43, 255), 64, 5.0f);
-
-    // Draw progress arc
-    if (fraction > 0.001f) {
-        const float IM_PI = 3.1415926535f;
-        float start_angle = -IM_PI / 2.0f; // 12 o'clock top
-        float end_angle = start_angle + fraction * 2.0f * IM_PI;
-        draw_list->PathClear();
-        draw_list->PathArcTo(screen_center, radius, start_angle, end_angle, 64);
-        draw_list->PathStroke(arc_col, 0, pulse_thickness);
-    }
-
-    // Large Countdown Text using crisp large font
-    ImFont* count_font = font_large_ ? font_large_ : ImGui::GetIO().Fonts->Fonts[0];
-    ImGui::PushFont(count_font);
-    ImVec2 text_sz = ImGui::CalcTextSize(text.c_str());
-    draw_list->AddText(count_font, count_font->FontSize, ImVec2(screen_center.x - text_sz.x * 0.5f, screen_center.y - text_sz.y * 0.5f - 10.0f), IM_COL32(245, 245, 245, 255), text.c_str());
-    ImGui::PopFont();
-
-    // Active state title below text
-    std::string state_text = to_string(state);
-    ImVec2 st_sz = ImGui::CalcTextSize(state_text.c_str());
-    draw_list->AddText(ImVec2(screen_center.x - st_sz.x * 0.5f, screen_center.y + 25.0f), IM_COL32(180, 180, 180, 255), state_text.c_str());
-
-    ImGui::EndChild();
 }
 
 // ─── Analytics View (Stacked Bar Chart & Donut Chart Drawing) ────────────────
@@ -1493,47 +2114,141 @@ void GuiManager::render_settings(void* hwnd) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // 4. Timer durations
-    ImGui::Text("Focus & Break Durations (Minutes):");
+    // Diagnostics & System Specs
+    ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "System Info & Diagnostics");
     ImGui::Spacing();
 
-    ImGui::SetNextItemWidth(200);
-    ImGui::SliderInt("Focus duration", &focus_min_, 1, 60);
-    ImGui::Spacing();
+    ImGui::BeginChild("DiagnosticsPanel", ImVec2(0, 160), true);
+    ImGui::Text("Tempus Version: v1.0.0 Premium Edition");
+    ImGui::Text("Config File Path:  %s", config_path_.string().c_str());
+    
+    // Get database statistics
+    auto total_sessions_res = db_->get_recent_sessions(10000);
+    int total_sessions = total_sessions_res.is_ok() ? static_cast<int>(total_sessions_res.value().size()) : 0;
+    ImGui::Text("Total logged sessions in DB: %d", total_sessions);
+    
+    // Show system specs
+    ImGui::Text("Operating System: Windows (DirectX 11)");
+    ImGui::Text("ImGui Version: %s", IMGUI_VERSION);
+    ImGui::EndChild();
+}
 
-    ImGui::SetNextItemWidth(200);
-    ImGui::SliderInt("Short break", &short_break_min_, 1, 30);
-    ImGui::Spacing();
-
-    ImGui::SetNextItemWidth(200);
-    ImGui::SliderInt("Long break", &long_break_min_, 1, 60);
-    ImGui::Spacing();
-
-    ImGui::SetNextItemWidth(200);
-    ImGui::InputInt("Sessions before long break", &sessions_before_long_);
-    sessions_before_long_ = std::clamp(sessions_before_long_, 1, 20);
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    if (ImGui::Button("Save Timer Configurations", ImVec2(220, 32))) {
-        // Sync values to config
-        config_.focus_duration_sec = focus_min_ * 60;
-        config_.short_break_sec    = short_break_min_ * 60;
-        config_.long_break_sec     = long_break_min_ * 60;
-        config_.sessions_before_long_break = sessions_before_long_;
-
-        // Update active engine config
-        TimerConfig engine_cfg;
-        engine_cfg.focus_duration_sec = config_.focus_duration_sec;
-        engine_cfg.short_break_sec    = config_.short_break_sec;
-        engine_cfg.long_break_sec     = config_.long_break_sec;
-        engine_cfg.sessions_before_long_break = config_.sessions_before_long_break;
-        engine_->set_config(engine_cfg);
-
-        // Save
-        ConfigManager::save(config_, config_path_);
-        logger_->info("GuiManager", "Saved updated timer configuration settings");
+void GuiManager::render_mini_view(void* hwnd) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+    
+    std::string task_name = "";
+    std::string time_str = "";
+    bool active = false;
+    bool paused = false;
+    
+    if (timer_mode_ == 0) { // Pomodoro
+        TimerState state = engine_->state();
+        active = (state != TimerState::Idle);
+        paused = (state == TimerState::Paused);
+        task_name = engine_->current_task().empty() ? "Focus Session" : engine_->current_task();
+        int m = engine_->remaining_sec() / 60;
+        int s = engine_->remaining_sec() % 60;
+        char buf[32];
+        sprintf_s(buf, "%02d:%02d", m, s);
+        time_str = buf;
+    } else { // Stopwatch
+        active = stopwatch_active_;
+        paused = stopwatch_paused_;
+        task_name = stopwatch_task_name_[0] == '\0' ? "Stopwatch Session" : stopwatch_task_name_;
+        int h = stopwatch_elapsed_sec_ / 3600;
+        int m = (stopwatch_elapsed_sec_ % 3600) / 60;
+        int s = stopwatch_elapsed_sec_ % 60;
+        char buf[32];
+        sprintf_s(buf, "%02d:%02d:%02d", h, m, s);
+        time_str = buf;
     }
+    
+    if (task_name.size() > 22) {
+        task_name = task_name.substr(0, 19) + "...";
+    }
+    
+    ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "%s", task_name.c_str());
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 22.0f);
+    
+    if (ImGui::Button("[ ]##Restore", ImVec2(22, 22))) {
+        mini_mode_ = false;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Expand to full view");
+    }
+    
+    ImGui::Spacing();
+    
+    ImGui::PushFont(font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0]);
+    ImGui::Text("%s", time_str.c_str());
+    ImGui::PopFont();
+    
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    if (!active) {
+        ImGui::TextDisabled("Timer is inactive");
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 60.0f);
+        if (ImGui::Button("Expand", ImVec2(60, 24))) {
+            mini_mode_ = false;
+        }
+    } else {
+        if (timer_mode_ == 0) { // Pomodoro active controls
+            if (paused) {
+                if (ImGui::Button("Resume", ImVec2(70, 26))) {
+                    engine_->resume();
+                }
+            } else {
+                if (ImGui::Button("Pause", ImVec2(70, 26))) {
+                    engine_->pause();
+                }
+            }
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+            if (ImGui::Button("Stop", ImVec2(70, 26))) {
+                engine_->stop();
+                tags_input_[0] = '\0';
+                details_input_[0] = '\0';
+            }
+            ImGui::PopStyleColor();
+        } else { // Stopwatch active controls
+            if (paused) {
+                if (ImGui::Button("Resume", ImVec2(70, 26))) {
+                    stopwatch_paused_ = false;
+                    stopwatch_last_time_ = std::time(nullptr);
+                }
+            } else {
+                if (ImGui::Button("Pause", ImVec2(70, 26))) {
+                    stopwatch_paused_ = true;
+                }
+            }
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
+            if (ImGui::Button("Stop", ImVec2(70, 26))) {
+                TaskEntry entry;
+                entry.task_name = stopwatch_task_name_[0] == '\0' ? "Stopwatch Session" : stopwatch_task_name_;
+                entry.tags = stopwatch_tags_;
+                entry.details = stopwatch_details_;
+                entry.started_at = std::time(nullptr) - stopwatch_elapsed_sec_;
+                entry.ended_at = std::time(nullptr);
+                entry.duration_sec = stopwatch_elapsed_sec_;
+                entry.state = "completed";
+                
+                db_->log_session(entry);
+                
+                auto list = db_->get_recent_sessions(100);
+                if (list.is_ok()) cached_sessions_ = list.value();
+                
+                stopwatch_active_ = false;
+                stopwatch_paused_ = false;
+                stopwatch_elapsed_sec_ = 0;
+            }
+            ImGui::PopStyleColor();
+        }
+    }
+    
+    ImGui::PopStyleVar();
 }
 
 } // namespace tempus

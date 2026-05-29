@@ -281,6 +281,17 @@ VoidR SqliteDatabaseManager::update_session(const TaskEntry& entry) {
     return VoidR::ok();
 }
 
+VoidR SqliteDatabaseManager::clear_all_sessions() {
+    auto r = exec("DELETE FROM sessions;");
+    if (r.is_err()) return r;
+    
+    // Also reset SQLite primary key counter
+    exec("DELETE FROM sqlite_sequence WHERE name='sessions';");
+    
+    logger_->info("DatabaseManager", "Cleared all sessions from database");
+    return VoidR::ok();
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 VoidR SqliteDatabaseManager::exec(const std::string& sql) {

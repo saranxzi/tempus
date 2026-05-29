@@ -33,6 +33,9 @@ public:
 
     /// Update an existing session's details.
     virtual VoidR update_session(const TaskEntry& entry) = 0;
+
+    /// Delete all sessions from the database.
+    virtual VoidR clear_all_sessions() = 0;
 };
 
 /// SQLite-backed implementation of IDatabaseManager.
@@ -55,6 +58,9 @@ public:
     Result<std::vector<TaskEntry>> get_recent_sessions(int limit) override;
     VoidR delete_session(int64_t id) override;
     VoidR update_session(const TaskEntry& entry) override;
+    VoidR clear_all_sessions() override;
+
+    const std::string& db_path() const { return db_path_; }
 
 
 private:
