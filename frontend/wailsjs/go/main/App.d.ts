@@ -10,6 +10,10 @@ export function DeleteTask(arg1:number):Promise<void>;
 
 export function DeleteTimeEntry(arg1:number):Promise<void>;
 
+export function EnterMiniMode():Promise<void>;
+
+export function ExitMiniMode():Promise<void>;
+
 export function GetAnalyticsData(arg1:string,arg2:string):Promise<main.AnalyticsData>;
 
 export function GetDashboardData():Promise<main.DashboardData>;

@@ -18,6 +18,14 @@ export function DeleteTimeEntry(arg1) {
   return window['go']['main']['App']['DeleteTimeEntry'](arg1);
 }
 
+export function EnterMiniMode() {
+  return window['go']['main']['App']['EnterMiniMode']();
+}
+
+export function ExitMiniMode() {
+  return window['go']['main']['App']['ExitMiniMode']();
+}
+
 export function GetAnalyticsData(arg1, arg2) {
   return window['go']['main']['App']['GetAnalyticsData'](arg1, arg2);
 }

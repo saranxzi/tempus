@@ -18,6 +18,7 @@ let pomoPhase = 'focus'; // 'focus' | 'short-break' | 'long-break'
 let pomoSessionCount = 0;
 let pomoSettings = { focusDuration: 25, shortBreakDuration: 5, longBreakDuration: 15, longBreakInterval: 4 };
 let pomoSettingsOpen = false;
+let pomoTaskId = null;
 
 // Stopwatch state
 let swTimer = null;
@@ -130,8 +131,8 @@ async function renderView(view) {
 
   switch (view) {
     case 'dashboard':    await renderDashboard(main); break;
-    case 'pomodoro':     renderPomodoro(main); break;
-    case 'stopwatch':    renderStopwatch(main); break;
+    case 'pomodoro':     await renderPomodoro(main); break;
+    case 'stopwatch':    await renderStopwatch(main); break;
     case 'time-tracking': await renderTimeTracking(main); break;
     case 'analytics':    await renderAnalytics(main); break;
     case 'tasks':        await renderTasks(main); break;
@@ -318,7 +319,7 @@ function roundRect(ctx, x, y, w, h, r) {
 // POMODORO VIEW
 // ══════════════════════════════════════════════════════════════════════════
 
-function renderPomodoro(container) {
+async function renderPomodoro(container) {
   const circumference = 2 * Math.PI * 115;
   const progress = pomoTotalSeconds > 0 ? (1 - pomoSeconds / pomoTotalSeconds) : 0;
   const dashOffset = circumference * (1 - progress);
@@ -326,12 +327,64 @@ function renderPomodoro(container) {
   const isBreak = pomoPhase !== 'focus';
   const breakClass = isBreak ? ' break-mode' : '';
 
+  // Fetch today's Pomodoro entries
+  let todayPomosHTML = '';
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const entries = await Go.GetTimeEntries(today + 'T00:00:00', today + 'T23:59:59');
+    const pomoEntries = entries.filter(e => e.note && e.note.includes('Pomodoro'));
+    if (pomoEntries && pomoEntries.length > 0) {
+      todayPomosHTML = `
+        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0">
+          <div class="card-header">
+            <span class="card-title">Today's Focus Sessions</span>
+          </div>
+          <div style="max-height: 200px; overflow-y: auto;">
+            ${pomoEntries.map(e => `
+              <div class="activity-item" style="cursor: default;">
+                <div class="activity-dot" style="background: ${e.taskColor}"></div>
+                <div class="activity-info">
+                  <div class="activity-name">${e.taskName}</div>
+                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} • ${e.note}</div>
+                </div>
+                <div class="activity-duration">${fmtDuration(e.duration)}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    } else {
+      todayPomosHTML = `
+        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0;text-align:center">
+          <div class="text-muted" style="font-size:12px;padding:var(--space-md)">No Pomodoro sessions logged today yet.</div>
+        </div>
+      `;
+    }
+  } catch(e) {
+    console.error(e);
+  }
+
   container.innerHTML = `
     <div class="view-header animate-in">
       <h1>Pomodoro Timer</h1>
       <p>Focus deeply, then take restorative breaks</p>
     </div>
     <div class="card animate-in" style="max-width:500px;margin:0 auto">
+      <div class="form-group" style="max-width:300px;margin:0 auto var(--space-md)">
+        <label class="form-label">Associate Task</label>
+        <div class="flex gap-sm">
+          <select class="form-select" id="pomo-task-select" style="flex:1">
+            <option value="">Choose a task (optional)…</option>
+          </select>
+          <button class="btn btn-secondary" id="pomo-new-task-btn" style="padding:0 12px" data-tooltip="New Task">+</button>
+        </div>
+        <div id="pomo-quick-add-container" class="hidden" style="margin-top:var(--space-xs);display:flex;gap:var(--space-xs)">
+          <input type="text" id="pomo-quick-add-input" class="form-input" placeholder="New task name..." style="flex:1;padding:6px 10px;font-size:12px">
+          <button class="btn btn-primary btn-sm" id="pomo-quick-add-save">Save</button>
+          <button class="btn btn-secondary btn-sm" id="pomo-quick-add-cancel">✕</button>
+        </div>
+      </div>
+      
       <div class="timer-display">
         <div class="timer-phase${breakClass}" id="pomo-phase">${phaseLabel()}</div>
         <div class="timer-ring-container">
@@ -384,7 +437,55 @@ function renderPomodoro(container) {
         </div>
       </div>
     </div>
+    ${todayPomosHTML}
   `;
+
+  // Populate tasks dropdown
+  await loadTasksDropdown('#pomo-task-select', pomoTaskId);
+
+  // Set selected task on change
+  const pomoSelect = $('#pomo-task-select');
+  pomoSelect?.addEventListener('change', () => {
+    pomoTaskId = parseInt(pomoSelect.value) || null;
+  });
+
+  // Hook up quick task add
+  const pNewBtn = $('#pomo-new-task-btn');
+  const pContainerDiv = $('#pomo-quick-add-container');
+  const pInput = $('#pomo-quick-add-input');
+  const pSaveBtn = $('#pomo-quick-add-save');
+  const pCancelBtn = $('#pomo-quick-add-cancel');
+
+  pNewBtn?.addEventListener('click', () => {
+    pContainerDiv?.classList.remove('hidden');
+    pInput?.focus();
+  });
+
+  pCancelBtn?.addEventListener('click', () => {
+    pContainerDiv?.classList.add('hidden');
+    if (pInput) pInput.value = '';
+  });
+
+  pSaveBtn?.addEventListener('click', async () => {
+    const name = pInput?.value?.trim();
+    if (!name) return;
+    try {
+      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+      const id = await Go.AddTask(name, color);
+      pContainerDiv?.classList.add('hidden');
+      if (pInput) pInput.value = '';
+      
+      // Reload dropdown and select new task
+      const select = $('#pomo-task-select');
+      if (select) {
+        select.innerHTML = '<option value="">Choose a task (optional)…</option>';
+        await loadTasksDropdown('#pomo-task-select', id);
+        pomoTaskId = id;
+      }
+    } catch(e) {
+      alert('Failed to add task: ' + e);
+    }
+  });
 }
 
 function phaseLabel() {
@@ -453,6 +554,14 @@ function tickPomodoro() {
     // Auto-advance phase
     if (pomoPhase === 'focus') {
       pomoSessionCount++;
+      if (pomoTaskId) {
+        const duration = pomoTotalSeconds;
+        Go.SaveStopwatchEntry(pomoTaskId, duration, 'Pomodoro focus session').then(() => {
+          if (currentView === 'pomodoro') renderPomodoro($('#main-content'));
+        }).catch(err => {
+          console.error("Failed to save Pomodoro time entry automatically:", err);
+        });
+      }
       if (pomoSessionCount % pomoSettings.longBreakInterval === 0) {
         pomoPhase = 'long-break';
         pomoTotalSeconds = pomoSettings.longBreakDuration * 60;
@@ -501,7 +610,43 @@ function skipPomodoro() {
 // STOPWATCH VIEW
 // ══════════════════════════════════════════════════════════════════════════
 
-function renderStopwatch(container) {
+async function renderStopwatch(container) {
+  let todayEntriesHTML = '';
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const entries = await Go.GetTimeEntries(today + 'T00:00:00', today + 'T23:59:59');
+    const swEntries = entries.filter(e => e.note && e.note.includes('Stopwatch'));
+    if (swEntries && swEntries.length > 0) {
+      todayEntriesHTML = `
+        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0">
+          <div class="card-header">
+            <span class="card-title">Today's Stopwatch Sessions</span>
+          </div>
+          <div style="max-height: 200px; overflow-y: auto;">
+            ${swEntries.map(e => `
+              <div class="activity-item" style="cursor: default;">
+                <div class="activity-dot" style="background: ${e.taskColor}"></div>
+                <div class="activity-info">
+                  <div class="activity-name">${e.taskName}</div>
+                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} - ${fmtTimeOnly(e.endTime)} ${e.note ? `• ${e.note}` : ''}</div>
+                </div>
+                <div class="activity-duration">${fmtDuration(e.duration)}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    } else {
+      todayEntriesHTML = `
+        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0;text-align:center">
+          <div class="text-muted" style="font-size:12px;padding:var(--space-md)">No stopwatch sessions logged today yet.</div>
+        </div>
+      `;
+    }
+  } catch(e) {
+    console.error(e);
+  }
+
   container.innerHTML = `
     <div class="view-header animate-in">
       <h1>Stopwatch</h1>
@@ -510,9 +655,17 @@ function renderStopwatch(container) {
     <div class="card animate-in" style="max-width:500px;margin:0 auto;text-align:center">
       <div class="form-group" style="max-width:300px;margin:0 auto var(--space-lg)">
         <label class="form-label">Select Task</label>
-        <select class="form-select" id="sw-task-select">
-          <option value="">Choose a task…</option>
-        </select>
+        <div class="flex gap-sm">
+          <select class="form-select" id="sw-task-select" style="flex:1">
+            <option value="">Choose a task…</option>
+          </select>
+          <button class="btn btn-secondary" id="sw-new-task-btn" style="padding:0 12px" data-tooltip="New Task">+</button>
+        </div>
+        <div id="sw-quick-add-container" class="hidden" style="margin-top:var(--space-xs);display:flex;gap:var(--space-xs)">
+          <input type="text" id="sw-quick-add-input" class="form-input" placeholder="New task name..." style="flex:1;padding:6px 10px;font-size:12px">
+          <button class="btn btn-primary btn-sm" id="sw-quick-add-save">Save</button>
+          <button class="btn btn-secondary btn-sm" id="sw-quick-add-cancel">✕</button>
+        </div>
       </div>
       <div class="stopwatch-display" id="sw-display">${fmtTime(swSeconds)}</div>
       <div class="timer-controls" style="margin-top:var(--space-lg)">
@@ -529,10 +682,52 @@ function renderStopwatch(container) {
         </label>
       </div>
     </div>
+    ${todayEntriesHTML}
   `;
 
   // Populate tasks dropdown
-  loadTasksDropdown('#sw-task-select', swTaskId);
+  await loadTasksDropdown('#sw-task-select', swTaskId);
+
+  // Hook up quick task add
+  const newBtn = $('#sw-new-task-btn');
+  const containerDiv = $('#sw-quick-add-container');
+  const input = $('#sw-quick-add-input');
+  const saveBtn = $('#sw-quick-add-save');
+  const cancelBtn = $('#sw-quick-add-cancel');
+
+  newBtn?.addEventListener('click', () => {
+    containerDiv?.classList.remove('hidden');
+    input?.focus();
+  });
+
+  cancelBtn?.addEventListener('click', () => {
+    containerDiv?.classList.add('hidden');
+    if (input) input.value = '';
+  });
+
+  saveBtn?.addEventListener('click', async () => {
+    const name = input?.value?.trim();
+    if (!name) return;
+    try {
+      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+      const id = await Go.AddTask(name, color);
+      containerDiv?.classList.add('hidden');
+      if (input) input.value = '';
+      
+      // Reload dropdown and select new task
+      const select = $('#sw-task-select');
+      if (select) {
+        select.innerHTML = '<option value="">Choose a task…</option>';
+        await loadTasksDropdown('#sw-task-select', id);
+        swTaskId = id;
+        swTaskName = name;
+        const miniName = $('#mini-task-name');
+        if (miniName) miniName.textContent = name;
+      }
+    } catch(e) {
+      alert('Failed to add task: ' + e);
+    }
+  });
 }
 
 async function loadTasksDropdown(selector, selectedId) {
@@ -555,6 +750,8 @@ async function loadTasksDropdown(selector, selectedId) {
         swTaskName = task?.name || '';
         const miniName = $('#mini-task-name');
         if (miniName) miniName.textContent = swTaskName || '—';
+      } else if (selector === '#pomo-task-select') {
+        pomoTaskId = id || null;
       }
     });
   } catch (e) { console.error(e); }
@@ -614,31 +811,57 @@ async function stopAndSaveStopwatch() {
     if (miniTime) miniTime.textContent = fmtTime(0);
     const btn = $('#sw-play-btn');
     if (btn) btn.textContent = '▶';
-    hideMiniStopwatch();
+    await hideMiniStopwatch();
+    if (currentView === 'stopwatch') await renderStopwatch($('#main-content'));
   } catch (e) {
     alert('Failed to save: ' + e);
   }
 }
 
-function toggleMiniStopwatch(show) {
+async function toggleMiniStopwatch(show) {
   swMiniVisible = show;
   const mini = $('#mini-stopwatch');
   if (mini) mini.classList.toggle('hidden', !show);
+  
+  if (show) {
+    document.body.classList.add('mini-mode');
+    swPinned = true;
+    const pin = $('#mini-pin');
+    if (pin) pin.textContent = '📍';
+    try {
+      await Go.EnterMiniMode();
+    } catch(e) { console.error(e); }
+  } else {
+    document.body.classList.remove('mini-mode');
+    swPinned = false;
+    const pin = $('#mini-pin');
+    if (pin) pin.textContent = '📌';
+    try {
+      await Go.ExitMiniMode();
+    } catch(e) { console.error(e); }
+  }
 }
 
-function hideMiniStopwatch() {
+async function hideMiniStopwatch() {
   swMiniVisible = false;
   const mini = $('#mini-stopwatch');
   if (mini) mini.classList.add('hidden');
   const check = $('#sw-mini-check');
   if (check) check.checked = false;
+  document.body.classList.remove('mini-mode');
+  swPinned = false;
+  const pin = $('#mini-pin');
+  if (pin) pin.textContent = '📌';
+  try {
+    await Go.ExitMiniMode();
+  } catch(e) { console.error(e); }
 }
 
-function togglePin() {
+async function togglePin() {
   swPinned = !swPinned;
-  Go.ToggleAlwaysOnTop(swPinned);
   const pin = $('#mini-pin');
   if (pin) pin.textContent = swPinned ? '📍' : '📌';
+  await toggleMiniStopwatch(swPinned);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -793,7 +1016,15 @@ async function showEntryModal(entry) {
         <div class="modal-title">${isEdit ? 'Edit Entry' : 'Add Time Entry'}</div>
         <div class="form-group">
           <label class="form-label">Task</label>
-          <select class="form-select" id="modal-task"></select>
+          <div class="flex gap-sm">
+            <select class="form-select" id="modal-task" style="flex:1"></select>
+            <button class="btn btn-secondary" id="modal-new-task-btn" style="padding:0 12px" data-tooltip="New Task">+</button>
+          </div>
+          <div id="modal-quick-add-container" class="hidden" style="margin-top:var(--space-xs);display:flex;gap:var(--space-xs)">
+            <input type="text" id="modal-quick-add-input" class="form-input" placeholder="New task name..." style="flex:1;padding:6px 10px;font-size:12px">
+            <button class="btn btn-primary btn-sm" id="modal-quick-add-save">Save</button>
+            <button class="btn btn-secondary btn-sm" id="modal-quick-add-cancel">✕</button>
+          </div>
         </div>
         <div class="grid-2">
           <div class="form-group">
@@ -820,6 +1051,43 @@ async function showEntryModal(entry) {
 
   // Load tasks
   await loadTasksDropdown('#modal-task', taskIdVal);
+
+  // Hook up quick task add
+  const mNewBtn = $('#modal-new-task-btn');
+  const mContainerDiv = $('#modal-quick-add-container');
+  const mInput = $('#modal-quick-add-input');
+  const mSaveBtn = $('#modal-quick-add-save');
+  const mCancelBtn = $('#modal-quick-add-cancel');
+
+  mNewBtn?.addEventListener('click', () => {
+    mContainerDiv?.classList.remove('hidden');
+    mInput?.focus();
+  });
+
+  mCancelBtn?.addEventListener('click', () => {
+    mContainerDiv?.classList.add('hidden');
+    if (mInput) mInput.value = '';
+  });
+
+  mSaveBtn?.addEventListener('click', async () => {
+    const name = mInput?.value?.trim();
+    if (!name) return;
+    try {
+      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+      const id = await Go.AddTask(name, color);
+      mContainerDiv?.classList.add('hidden');
+      if (mInput) mInput.value = '';
+      
+      // Reload dropdown and select new task
+      const select = $('#modal-task');
+      if (select) {
+        select.innerHTML = '';
+        await loadTasksDropdown('#modal-task', id);
+      }
+    } catch(e) {
+      alert('Failed to add task: ' + e);
+    }
+  });
 
   // Duration display
   function updateDuration() {
@@ -1250,9 +1518,9 @@ async function renderSettings(container) {
       <div class="card-header"><span class="card-title">Keyboard Shortcuts</span></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
         <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Dashboard</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">1</kbd></div>
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Pomodoro</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">2</kbd></div>
+        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Time Log</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">2</kbd></div>
         <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Stopwatch</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">3</kbd></div>
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Time Log</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">4</kbd></div>
+        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Pomodoro</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">4</kbd></div>
         <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Analytics</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">5</kbd></div>
         <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Tasks</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">6</kbd></div>
       </div>
@@ -1267,9 +1535,9 @@ document.addEventListener('keydown', (e) => {
 
   switch (e.key) {
     case '1': navigateTo('dashboard'); break;
-    case '2': navigateTo('pomodoro'); break;
+    case '2': navigateTo('time-tracking'); break;
     case '3': navigateTo('stopwatch'); break;
-    case '4': navigateTo('time-tracking'); break;
+    case '4': navigateTo('pomodoro'); break;
     case '5': navigateTo('analytics'); break;
     case '6': navigateTo('tasks'); break;
     case ' ':

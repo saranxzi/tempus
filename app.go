@@ -215,3 +215,17 @@ func (a *App) SetWindowSize(width, height int) {
 func (a *App) SetWindowMinSize(width, height int) {
 	wailsRuntime.WindowSetMinSize(a.ctx, width, height)
 }
+
+// EnterMiniMode shrinks the window and sets it to always on top.
+func (a *App) EnterMiniMode() {
+	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, true)
+	wailsRuntime.WindowSetMinSize(a.ctx, 100, 50)
+	wailsRuntime.WindowSetSize(a.ctx, 320, 80)
+}
+
+// ExitMiniMode restores the window to normal size and unpins it.
+func (a *App) ExitMiniMode() {
+	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, false)
+	wailsRuntime.WindowSetMinSize(a.ctx, 900, 600)
+	wailsRuntime.WindowSetSize(a.ctx, 1100, 720)
+}

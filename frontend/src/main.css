@@ -878,6 +878,40 @@ html, body {
   text-overflow: ellipsis;
 }
 
+body.mini-mode #titlebar {
+  display: none !important;
+}
+
+body.mini-mode #app {
+  display: none !important;
+}
+
+body.mini-mode #mini-stopwatch {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  padding: 0 var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-surface);
+  --wails-draggable: drag;
+  -webkit-app-region: drag;
+}
+
+body.mini-mode #mini-stopwatch button {
+  --wails-draggable: no-drag;
+  -webkit-app-region: no-drag;
+}
+
+
 /* ── Color picker grid ─────────────────────────────────────────────────── */
 .color-picker-grid {
   display: flex;
