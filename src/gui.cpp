@@ -1,4 +1,7 @@
 #include "pomodoro/gui.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
@@ -38,16 +41,31 @@ static std::string format_duration(int total_sec) {
 }
 
 // Constructor
-GuiManager::GuiManager(TimerEngine* engine, SqliteDatabaseManager* db, ILogger* logger)
+GuiManager::GuiManager(TimerEngine* engine, SqliteDatabaseManager* db, ILogger* logger, std::filesystem::path config_path)
     : engine_(engine)
     , db_(db)
     , logger_(logger)
+    , config_path_(std::move(config_path))
 {
-    // Pre-populate configuration from engine defaults
-    focus_min_ = engine_->config().focus_duration_sec / 60;
-    short_break_min_ = engine_->config().short_break_sec / 60;
-    long_break_min_ = engine_->config().long_break_sec / 60;
-    sessions_before_long_ = engine_->config().sessions_before_long_break;
+    // Load configuration from path
+    auto load_result = ConfigManager::load(config_path_);
+    if (load_result.is_ok()) {
+        config_ = load_result.value();
+    }
+
+    // Sync loaded configuration to engine
+    TimerConfig engine_cfg;
+    engine_cfg.focus_duration_sec = config_.focus_duration_sec;
+    engine_cfg.short_break_sec = config_.short_break_sec;
+    engine_cfg.long_break_sec = config_.long_break_sec;
+    engine_cfg.sessions_before_long_break = config_.sessions_before_long_break;
+    engine_->set_config(engine_cfg);
+
+    // Sync loaded configuration to UI member variables
+    focus_min_ = config_.focus_duration_sec / 60;
+    short_break_min_ = config_.short_break_sec / 60;
+    long_break_min_ = config_.long_break_sec / 60;
+    sessions_before_long_ = config_.sessions_before_long_break;
 
     // Load initial list from database
     auto list = db_->get_recent_sessions(100);
@@ -70,60 +88,170 @@ void GuiManager::initialize_style() {
         font_large_   = font_regular_;
     }
 
-    ImGuiStyle& style = ImGui::GetStyle();
+    apply_theme(config_.theme_index);
+}
 
-    // Rounding & Spacing
-    style.WindowRounding    = 6.0f;
-    style.ChildRounding     = 6.0f;
-    style.FrameRounding     = 4.0f;
-    style.PopupRounding     = 4.0f;
+void GuiManager::apply_theme(int theme_idx) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImVec4* colors = style.Colors;
+    
+    style.WindowRounding    = 8.0f;
+    style.ChildRounding     = 8.0f;
+    style.FrameRounding     = 6.0f;
+    style.PopupRounding     = 6.0f;
     style.ScrollbarRounding = 9.0f;
-    style.GrabRounding      = 4.0f;
-    style.TabRounding       = 4.0f;
+    style.GrabRounding      = 6.0f;
+    style.TabRounding       = 6.0f;
     style.WindowBorderSize  = 1.0f;
     style.FrameBorderSize   = 1.0f;
 
-    // Dark Color Palette
-    ImVec4* colors = style.Colors;
-    colors[ImGuiCol_Text]                   = ImVec4(0.95f, 0.95f, 0.95f, 1.00f);
-    colors[ImGuiCol_TextDisabled]           = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
-    colors[ImGuiCol_WindowBg]               = ImVec4(0.10f, 0.10f, 0.10f, 1.00f); // Slate black
-    colors[ImGuiCol_ChildBg]                = ImVec4(0.08f, 0.08f, 0.08f, 1.00f); // Deeper black sidebar/accent
-    colors[ImGuiCol_PopupBg]                = ImVec4(0.12f, 0.12f, 0.12f, 1.00f);
-    colors[ImGuiCol_Border]                 = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
-    colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-    colors[ImGuiCol_FrameBg]                = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
-    colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.22f, 0.22f, 0.22f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]          = ImVec4(0.28f, 0.28f, 0.28f, 1.00f);
-    colors[ImGuiCol_TitleBg]                = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
-    colors[ImGuiCol_TitleBgActive]          = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
-    colors[ImGuiCol_MenuBarBg]              = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
-    colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.31f, 0.31f, 0.31f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.41f, 0.41f, 0.41f, 1.00f);
-    colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.51f, 0.51f, 0.51f, 1.00f);
-    colors[ImGuiCol_CheckMark]              = ImVec4(0.00f, 0.47f, 0.83f, 1.00f); // Blue
-    colors[ImGuiCol_SliderGrab]             = ImVec4(0.00f, 0.47f, 0.83f, 1.00f);
-    colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.00f, 0.35f, 0.62f, 1.00f);
-    colors[ImGuiCol_Button]                 = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
-    colors[ImGuiCol_ButtonHovered]          = ImVec4(0.00f, 0.47f, 0.83f, 1.00f); // Accent Hover
-    colors[ImGuiCol_ButtonActive]           = ImVec4(0.00f, 0.35f, 0.62f, 1.00f);
-    colors[ImGuiCol_Header]                 = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
-    colors[ImGuiCol_HeaderHovered]          = ImVec4(0.22f, 0.22f, 0.22f, 1.00f);
-    colors[ImGuiCol_HeaderActive]           = ImVec4(0.00f, 0.47f, 0.83f, 0.70f);
-    colors[ImGuiCol_Separator]              = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+    if (theme_idx == 0) {
+        // Midnight Blue Theme (Deep Slate Blue background, Navy panels, Indigo Accent)
+        colors[ImGuiCol_Text]                   = ImVec4(0.95f, 0.96f, 0.98f, 1.00f);
+        colors[ImGuiCol_TextDisabled]           = ImVec4(0.50f, 0.55f, 0.60f, 1.00f);
+        colors[ImGuiCol_WindowBg]               = ImVec4(0.09f, 0.10f, 0.15f, 1.00f); 
+        colors[ImGuiCol_ChildBg]                = ImVec4(0.06f, 0.07f, 0.10f, 1.00f); 
+        colors[ImGuiCol_PopupBg]                = ImVec4(0.11f, 0.12f, 0.18f, 1.00f);
+        colors[ImGuiCol_Border]                 = ImVec4(0.18f, 0.22f, 0.33f, 1.00f);
+        colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        colors[ImGuiCol_FrameBg]                = ImVec4(0.14f, 0.16f, 0.24f, 1.00f);
+        colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.20f, 0.24f, 0.35f, 1.00f);
+        colors[ImGuiCol_FrameBgActive]          = ImVec4(0.25f, 0.30f, 0.45f, 1.00f);
+        colors[ImGuiCol_TitleBg]                = ImVec4(0.06f, 0.07f, 0.10f, 1.00f);
+        colors[ImGuiCol_TitleBgActive]          = ImVec4(0.08f, 0.10f, 0.15f, 1.00f);
+        colors[ImGuiCol_MenuBarBg]              = ImVec4(0.06f, 0.07f, 0.10f, 1.00f);
+        colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.06f, 0.07f, 0.10f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.22f, 0.27f, 0.40f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.30f, 0.36f, 0.52f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.38f, 0.45f, 0.65f, 1.00f);
+        colors[ImGuiCol_CheckMark]              = ImVec4(0.39f, 0.44f, 0.96f, 1.00f); 
+        colors[ImGuiCol_SliderGrab]             = ImVec4(0.39f, 0.44f, 0.96f, 1.00f);
+        colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.25f, 0.30f, 0.85f, 1.00f);
+        colors[ImGuiCol_Button]                 = ImVec4(0.18f, 0.22f, 0.38f, 1.00f);
+        colors[ImGuiCol_ButtonHovered]          = ImVec4(0.39f, 0.44f, 0.96f, 1.00f); 
+        colors[ImGuiCol_ButtonActive]           = ImVec4(0.25f, 0.30f, 0.85f, 1.00f);
+        colors[ImGuiCol_Header]                 = ImVec4(0.15f, 0.18f, 0.30f, 1.00f);
+        colors[ImGuiCol_HeaderHovered]          = ImVec4(0.22f, 0.27f, 0.42f, 1.00f);
+        colors[ImGuiCol_HeaderActive]           = ImVec4(0.39f, 0.44f, 0.96f, 0.70f);
+        colors[ImGuiCol_Separator]              = ImVec4(0.18f, 0.22f, 0.33f, 1.00f);
+    } else if (theme_idx == 1) {
+        // Obsidian Dark Theme (Pitch Black background, Charcoal, Silver Accent)
+        colors[ImGuiCol_Text]                   = ImVec4(0.90f, 0.90f, 0.90f, 1.00f);
+        colors[ImGuiCol_TextDisabled]           = ImVec4(0.40f, 0.40f, 0.40f, 1.00f);
+        colors[ImGuiCol_WindowBg]               = ImVec4(0.05f, 0.05f, 0.05f, 1.00f); 
+        colors[ImGuiCol_ChildBg]                = ImVec4(0.02f, 0.02f, 0.02f, 1.00f); 
+        colors[ImGuiCol_PopupBg]                = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
+        colors[ImGuiCol_Border]                 = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
+        colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        colors[ImGuiCol_FrameBg]                = ImVec4(0.10f, 0.10f, 0.10f, 1.00f);
+        colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+        colors[ImGuiCol_FrameBgActive]          = ImVec4(0.24f, 0.24f, 0.24f, 1.00f);
+        colors[ImGuiCol_TitleBg]                = ImVec4(0.02f, 0.02f, 0.02f, 1.00f);
+        colors[ImGuiCol_TitleBgActive]          = ImVec4(0.05f, 0.05f, 0.05f, 1.00f);
+        colors[ImGuiCol_MenuBarBg]              = ImVec4(0.02f, 0.02f, 0.02f, 1.00f);
+        colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.02f, 0.02f, 0.02f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.26f, 0.26f, 0.26f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.35f, 0.35f, 0.35f, 1.00f);
+        colors[ImGuiCol_CheckMark]              = ImVec4(0.70f, 0.70f, 0.70f, 1.00f); 
+        colors[ImGuiCol_SliderGrab]             = ImVec4(0.60f, 0.60f, 0.60f, 1.00f);
+        colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.80f, 0.80f, 0.80f, 1.00f);
+        colors[ImGuiCol_Button]                 = ImVec4(0.12f, 0.12f, 0.12f, 1.00f);
+        colors[ImGuiCol_ButtonHovered]          = ImVec4(0.25f, 0.25f, 0.25f, 1.00f);
+        colors[ImGuiCol_ButtonActive]           = ImVec4(0.35f, 0.35f, 0.35f, 1.00f);
+        colors[ImGuiCol_Header]                 = ImVec4(0.10f, 0.10f, 0.10f, 1.00f);
+        colors[ImGuiCol_HeaderHovered]          = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+        colors[ImGuiCol_HeaderActive]           = ImVec4(0.26f, 0.26f, 0.26f, 1.00f);
+        colors[ImGuiCol_Separator]              = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
+    } else if (theme_idx == 2) {
+        // Forest Mint Theme (Sage Green and Emerald Highlights on deep charcoal)
+        colors[ImGuiCol_Text]                   = ImVec4(0.92f, 0.95f, 0.93f, 1.00f);
+        colors[ImGuiCol_TextDisabled]           = ImVec4(0.45f, 0.52f, 0.48f, 1.00f);
+        colors[ImGuiCol_WindowBg]               = ImVec4(0.11f, 0.13f, 0.12f, 1.00f); 
+        colors[ImGuiCol_ChildBg]                = ImVec4(0.08f, 0.10f, 0.09f, 1.00f);
+        colors[ImGuiCol_PopupBg]                = ImVec4(0.13f, 0.16f, 0.14f, 1.00f);
+        colors[ImGuiCol_Border]                 = ImVec4(0.20f, 0.25f, 0.22f, 1.00f);
+        colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        colors[ImGuiCol_FrameBg]                = ImVec4(0.16f, 0.20f, 0.18f, 1.00f);
+        colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.22f, 0.28f, 0.25f, 1.00f);
+        colors[ImGuiCol_FrameBgActive]          = ImVec4(0.28f, 0.35f, 0.31f, 1.00f);
+        colors[ImGuiCol_TitleBg]                = ImVec4(0.08f, 0.10f, 0.09f, 1.00f);
+        colors[ImGuiCol_TitleBgActive]          = ImVec4(0.11f, 0.13f, 0.12f, 1.00f);
+        colors[ImGuiCol_MenuBarBg]              = ImVec4(0.08f, 0.10f, 0.09f, 1.00f);
+        colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.08f, 0.10f, 0.09f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.22f, 0.28f, 0.25f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.30f, 0.38f, 0.34f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.38f, 0.48f, 0.43f, 1.00f);
+        colors[ImGuiCol_CheckMark]              = ImVec4(0.10f, 0.72f, 0.50f, 1.00f); 
+        colors[ImGuiCol_SliderGrab]             = ImVec4(0.10f, 0.72f, 0.50f, 1.00f);
+        colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.08f, 0.58f, 0.40f, 1.00f);
+        colors[ImGuiCol_Button]                 = ImVec4(0.18f, 0.25f, 0.21f, 1.00f);
+        colors[ImGuiCol_ButtonHovered]          = ImVec4(0.10f, 0.72f, 0.50f, 1.00f); 
+        colors[ImGuiCol_ButtonActive]           = ImVec4(0.08f, 0.58f, 0.40f, 1.00f);
+        colors[ImGuiCol_Header]                 = ImVec4(0.15f, 0.22f, 0.18f, 1.00f);
+        colors[ImGuiCol_HeaderHovered]          = ImVec4(0.22f, 0.30f, 0.25f, 1.00f);
+        colors[ImGuiCol_HeaderActive]           = ImVec4(0.10f, 0.72f, 0.50f, 0.70f);
+        colors[ImGuiCol_Separator]              = ImVec4(0.20f, 0.25f, 0.22f, 1.00f);
+    } else {
+        // Slate Classic (default ImGui Dark themed Slate)
+        colors[ImGuiCol_Text]                   = ImVec4(0.95f, 0.95f, 0.95f, 1.00f);
+        colors[ImGuiCol_TextDisabled]           = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
+        colors[ImGuiCol_WindowBg]               = ImVec4(0.10f, 0.10f, 0.10f, 1.00f); 
+        colors[ImGuiCol_ChildBg]                = ImVec4(0.08f, 0.08f, 0.08f, 1.00f); 
+        colors[ImGuiCol_PopupBg]                = ImVec4(0.12f, 0.12f, 0.12f, 1.00f);
+        colors[ImGuiCol_Border]                 = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+        colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+        colors[ImGuiCol_FrameBg]                = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
+        colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.22f, 0.22f, 0.22f, 1.00f);
+        colors[ImGuiCol_FrameBgActive]          = ImVec4(0.28f, 0.28f, 0.28f, 1.00f);
+        colors[ImGuiCol_TitleBg]                = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
+        colors[ImGuiCol_TitleBgActive]          = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
+        colors[ImGuiCol_MenuBarBg]              = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
+        colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.31f, 0.31f, 0.31f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.41f, 0.41f, 0.41f, 1.00f);
+        colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.51f, 0.51f, 0.51f, 1.00f);
+        colors[ImGuiCol_CheckMark]              = ImVec4(0.00f, 0.47f, 0.83f, 1.00f); 
+        colors[ImGuiCol_SliderGrab]             = ImVec4(0.00f, 0.47f, 0.83f, 1.00f);
+        colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.00f, 0.35f, 0.62f, 1.00f);
+        colors[ImGuiCol_Button]                 = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+        colors[ImGuiCol_ButtonHovered]          = ImVec4(0.00f, 0.47f, 0.83f, 1.00f); 
+        colors[ImGuiCol_ButtonActive]           = ImVec4(0.00f, 0.35f, 0.62f, 1.00f);
+        colors[ImGuiCol_Header]                 = ImVec4(0.15f, 0.15f, 0.15f, 1.00f);
+        colors[ImGuiCol_HeaderHovered]          = ImVec4(0.22f, 0.22f, 0.22f, 1.00f);
+        colors[ImGuiCol_HeaderActive]           = ImVec4(0.00f, 0.47f, 0.83f, 0.70f);
+        colors[ImGuiCol_Separator]              = ImVec4(0.18f, 0.18f, 0.18f, 1.00f);
+    }
 }
 
 // Main render entry point
 void GuiManager::render(bool& running) {
-    // We update database cached records if the engine logged a session.
-    static TimerState last_state = TimerState::Idle;
+    // We update database cached records and trigger system sound alerts if state transitions
+    static TimerState sound_last_state = TimerState::Idle;
     TimerState current_state = engine_->state();
-    if (last_state != TimerState::Idle && current_state == TimerState::Idle) {
-        auto list = db_->get_recent_sessions(100);
-        if (list.is_ok()) cached_sessions_ = list.value();
+    if (sound_last_state != current_state) {
+        if (config_.sound_enabled) {
+            #ifdef _WIN32
+            // Focus ended -> transition to Break
+            if (sound_last_state == TimerState::Focusing && 
+                (current_state == TimerState::ShortBreak || current_state == TimerState::LongBreak)) {
+                ::MessageBeep(MB_ICONINFORMATION);
+            }
+            // Break ended -> transition to Idle or Focusing
+            else if ((sound_last_state == TimerState::ShortBreak || sound_last_state == TimerState::LongBreak) && 
+                     (current_state == TimerState::Idle || current_state == TimerState::Focusing)) {
+                ::MessageBeep(MB_ICONEXCLAMATION);
+            }
+            #endif
+        }
+
+        // If a session ended, reload cached sessions from DB
+        if (sound_last_state != TimerState::Idle && current_state == TimerState::Idle) {
+            auto list = db_->get_recent_sessions(100);
+            if (list.is_ok()) cached_sessions_ = list.value();
+        }
+        sound_last_state = current_state;
     }
-    last_state = current_state;
 
     // Main full-screen viewport container
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -157,10 +285,11 @@ void GuiManager::render(bool& running) {
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade_alpha_);
 
     switch (active_tab_) {
-        case 0: render_time_tracking(); break;
-        case 1: render_pomodoro();      break;
-        case 2: render_analytics();     break;
-        case 3: render_settings();      break;
+        case 0: render_dashboard();     break;
+        case 1: render_time_tracking(); break;
+        case 2: render_pomodoro();      break;
+        case 3: render_analytics();     break;
+        case 4: render_settings();      break;
         default: break;
     }
 
@@ -173,40 +302,275 @@ void GuiManager::render(bool& running) {
 
 // Left Sidebar Navigation Renderer
 void GuiManager::render_sidebar() {
-    ImGui::BeginChild("Sidebar", ImVec2(180, 0), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("Sidebar", ImVec2(185, 0), true, ImGuiWindowFlags_NoScrollbar);
 
-    // Title / Logo
+    // Title / Logo with custom vector clock
     ImGui::Spacing();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
+    ImVec2 clock_center = ImVec2(cursor_pos.x + 22.0f, cursor_pos.y + 16.0f);
+    float clock_rad = 10.0f;
+    
+    // Draw clock face
+    draw_list->AddCircle(clock_center, clock_rad, IM_COL32(0, 120, 212, 255), 32, 2.0f);
+    // Draw clock hands (minute and hour)
+    draw_list->AddLine(clock_center, ImVec2(clock_center.x, clock_center.y - 6.0f), IM_COL32(240, 240, 240, 255), 1.5f);
+    draw_list->AddLine(clock_center, ImVec2(clock_center.x + 4.5f, clock_center.y), IM_COL32(240, 240, 240, 255), 1.5f);
+    
+    ImGui::Indent(38.0f);
     ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
     ImGui::PushFont(header_font);
-    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), " TEMPUS");
+    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "TEMPUS");
     ImGui::PopFont();
-    ImGui::TextDisabled("  Time Utility");
+    ImGui::Unindent(38.0f);
+    
+    ImGui::TextDisabled("   Time Utility");
     ImGui::Separator();
     ImGui::Spacing();
 
-    const char* tabs[] = { "Time tracking", "Pomodoro", "Analytics", "Settings" };
-    for (int i = 0; i < 4; ++i) {
+    const char* tabs[] = { "Dashboard", "Time tracking", "Pomodoro", "Analytics", "Settings" };
+    for (int i = 0; i < 5; ++i) {
         bool selected = (active_tab_ == i);
+        ImVec2 p_min = ImGui::GetCursorScreenPos();
         
         // Active accent highlight bar on left edge
         if (selected) {
-            ImVec2 p_min = ImGui::GetCursorScreenPos();
-            ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(p_min, ImVec2(p_min.x + 3.0f, p_min.y + 24.0f), IM_COL32(0, 120, 212, 255));
         }
 
-        ImGui::Indent(8.0f);
-        if (ImGui::Selectable(tabs[i], selected, 0, ImVec2(150, 24))) {
+        // Draw soft color dot indicator for each view
+        ImU32 dot_color = IM_COL32(107, 114, 128, 255); // default grey
+        if (i == 0)      dot_color = IM_COL32(59, 130, 246, 255);  // blue
+        else if (i == 1) dot_color = IM_COL32(13, 148, 136, 255);  // teal
+        else if (i == 2) dot_color = IM_COL32(16, 185, 129, 255);  // green
+        else if (i == 3) dot_color = IM_COL32(139, 92, 246, 255);  // purple
+
+        ImVec2 dot_center = ImVec2(p_min.x + 16.0f, p_min.y + 12.0f);
+        draw_list->AddCircleFilled(dot_center, 4.0f, dot_color);
+
+        ImGui::Indent(24.0f);
+        if (ImGui::Selectable(tabs[i], selected, 0, ImVec2(135, 24))) {
             active_tab_ = i;
             details_open_ = false; // close details editor
             selected_session_idx_ = -1;
         }
-        ImGui::Unindent(8.0f);
+        ImGui::Unindent(24.0f);
         ImGui::Spacing();
     }
 
     ImGui::EndChild();
+}
+
+static std::time_t get_start_of_day(std::time_t t) {
+    std::tm tm_val;
+#ifdef _WIN32
+    localtime_s(&tm_val, &t);
+#else
+    localtime_r(&t, &tm_val);
+#endif
+    tm_val.tm_hour = 0;
+    tm_val.tm_min = 0;
+    tm_val.tm_sec = 0;
+    return std::mktime(&tm_val);
+}
+
+static std::time_t get_start_of_week(std::time_t t) {
+    std::tm tm_val;
+#ifdef _WIN32
+    localtime_s(&tm_val, &t);
+#else
+    localtime_r(&t, &tm_val);
+#endif
+    int days_to_subtract = tm_val.tm_wday == 0 ? 6 : tm_val.tm_wday - 1;
+    std::time_t start_of_day = get_start_of_day(t);
+    return start_of_day - days_to_subtract * 24 * 3600;
+}
+
+void GuiManager::render_dashboard() {
+    ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(header_font);
+    ImGui::Text("Dashboard");
+    ImGui::PopFont();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // 1. Calculate time tracked Today and This Week
+    std::time_t now = std::time(nullptr);
+    std::time_t start_of_today = get_start_of_day(now);
+    std::time_t start_of_week = get_start_of_week(now);
+
+    int today_seconds = 0;
+    int week_seconds = 0;
+    int today_sessions_count = 0;
+
+    for (const auto& s : cached_sessions_) {
+        if (s.state == "completed") {
+            if (s.started_at >= start_of_today) {
+                today_seconds += s.duration_sec;
+                today_sessions_count++;
+            }
+            if (s.started_at >= start_of_week) {
+                week_seconds += s.duration_sec;
+            }
+        }
+    }
+
+    // 2. Display summary cards in columns
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    float card_width = (avail.x - 30.0f) / 3.0f; // 3 columns
+    
+    // Draw columns
+    ImGui::BeginGroup();
+    
+    // --- COLUMN 1: Today's Time ---
+    ImGui::BeginChild("TodayCard", ImVec2(card_width, 100), true);
+    ImGui::TextDisabled("TODAY'S WORK");
+    ImGui::Spacing();
+    ImGui::PushFont(font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0]);
+    std::string today_dur_str = format_duration(today_seconds);
+    ImGui::TextColored(ImVec4(0.10f, 0.72f, 0.50f, 1.00f), "%s", today_dur_str.c_str());
+    ImGui::PopFont();
+    ImGui::TextDisabled("Sessions: %d", today_sessions_count);
+    ImGui::EndChild();
+    
+    ImGui::SameLine();
+    
+    // --- COLUMN 2: Weekly Goal Progress ---
+    ImGui::BeginChild("WeekCard", ImVec2(card_width, 100), true);
+    ImGui::TextDisabled("WEEKLY GOAL PROGRESS");
+    ImGui::Spacing();
+    
+    int goal_sec = config_.weekly_goal_hours * 3600;
+    float week_hours = static_cast<float>(week_seconds) / 3600.0f;
+    float pct = goal_sec > 0 ? static_cast<float>(week_seconds) / static_cast<float>(goal_sec) : 0.0f;
+    pct = std::clamp(pct, 0.0f, 1.0f);
+    
+    ImGui::PushFont(font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0]);
+    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "%.1f / %d h", week_hours, config_.weekly_goal_hours);
+    ImGui::PopFont();
+    
+    // Progress bar
+    ImGui::SetNextItemWidth(card_width - 24.0f);
+    char buf[32];
+    sprintf_s(buf, "%.0f%%", pct * 100.0f);
+    ImGui::ProgressBar(pct, ImVec2(0, 16), buf);
+    ImGui::EndChild();
+    
+    ImGui::SameLine();
+
+    // --- COLUMN 3: Active Status Card ---
+    ImGui::BeginChild("ActiveCard", ImVec2(card_width, 100), true);
+    TimerState state = engine_->state();
+    if (state == TimerState::Idle) {
+        ImGui::TextDisabled("STATUS: INACTIVE");
+        ImGui::Spacing();
+        ImGui::Text("No running timers.");
+        if (ImGui::Button("Go to Timer", ImVec2(card_width - 24.0f, 26.0f))) {
+            active_tab_ = 2; // switch to Pomodoro view
+        }
+    } else {
+        std::string state_name = to_string(state);
+        ImGui::TextDisabled("STATUS: %s", state_name.c_str());
+        ImGui::Spacing();
+        
+        // remaining countdown
+        int m = engine_->remaining_sec() / 60;
+        int s = engine_->remaining_sec() % 60;
+        char count_buf[32];
+        sprintf_s(count_buf, "%02d:%02d remaining", m, s);
+        
+        ImGui::PushFont(font_regular_ ? font_regular_ : ImGui::GetIO().Fonts->Fonts[0]);
+        ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.10f, 1.00f), "%s", count_buf);
+        ImGui::PopFont();
+        
+        // quick control button
+        if (ImGui::Button("Pause/Stop", ImVec2(card_width - 24.0f, 26.0f))) {
+            active_tab_ = 2; // go to Pomodoro view
+        }
+    }
+    ImGui::EndChild();
+    
+    ImGui::EndGroup();
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // 3. Lower Grid: Left = Quick Start / Log, Right = Recent Activity
+    float bottom_height = ImGui::GetContentRegionAvail().y - 15.0f;
+    float col_w = (avail.x - 20.0f) * 0.5f;
+
+    ImGui::BeginGroup();
+    // Left Box: Quick Task Initiation
+    ImGui::BeginChild("QuickStart", ImVec2(col_w, bottom_height), true);
+    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Quick Logger");
+    ImGui::Spacing();
+    
+    ImGui::Text("Start tracking instantly:");
+    ImGui::Spacing();
+
+    static char quick_task_[128] = "";
+    ImGui::InputTextWithHint("Task name##quick", "What are you working on?", quick_task_, sizeof(quick_task_));
+    ImGui::Spacing();
+    
+    static char quick_tag_[128] = "";
+    ImGui::InputTextWithHint("Tags##quick", "Comma-separated tags...", quick_tag_, sizeof(quick_tag_));
+    ImGui::Spacing();
+
+    if (state == TimerState::Idle) {
+        if (ImGui::Button("Start Timer Now", ImVec2(col_w - 24.0f, 32.0f))) {
+            std::string t_name = quick_task_[0] == '\0' ? "Focus Session" : quick_task_;
+            engine_->start(t_name);
+            engine_->set_active_tags_and_details(quick_tag_, "Quick logged session from Dashboard.");
+            // Copy values to Pomodoro view variables
+            strncpy_s(task_name_input_, t_name.c_str(), _TRUNCATE);
+            strncpy_s(tags_input_, quick_tag_, _TRUNCATE);
+            details_input_[0] = '\0';
+            active_tab_ = 2; // Jump to Pomodoro view
+        }
+    } else {
+        ImGui::TextColored(ImVec4(0.95f, 0.60f, 0.10f, 1.00f), "Timer is currently active!");
+        if (ImGui::Button("View Timer Status", ImVec2(col_w - 24.0f, 32.0f))) {
+            active_tab_ = 2;
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    // Right Box: Recent Activity Stream
+    ImGui::BeginChild("ActivityStream", ImVec2(col_w, bottom_height), true);
+    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "Recent Activity");
+    ImGui::Spacing();
+
+    int shown_count = 0;
+    for (const auto& s : cached_sessions_) {
+        if (shown_count >= 3) break;
+        shown_count++;
+
+        // Draw individual item as a soft card
+        ImGui::BeginChild((std::string("stream_") + std::to_string(s.id)).c_str(), ImVec2(col_w - 24.0f, 54.0f), true, ImGuiWindowFlags_NoScrollbar);
+        
+        ImVec2 p_min = ImGui::GetCursorScreenPos();
+        ImDrawList* d_list = ImGui::GetWindowDrawList();
+        
+        // draw a small color bar on left depending on tag/state
+        ImU32 col = (s.state == "completed") ? IM_COL32(16, 185, 129, 255) : IM_COL32(239, 68, 68, 255);
+        d_list->AddRectFilled(p_min, ImVec2(p_min.x + 3.0f, p_min.y + 36.0f), col);
+        
+        ImGui::Indent(8.0f);
+        ImGui::Text("%s", s.task_name.c_str());
+        ImGui::TextDisabled("%s | %s", to_date_string(s.started_at).c_str(), format_duration(s.duration_sec).c_str());
+        ImGui::Unindent(8.0f);
+        
+        ImGui::EndChild();
+        ImGui::Spacing();
+    }
+    if (shown_count == 0) {
+        ImGui::TextDisabled("No recent activity logged.");
+    }
+    ImGui::EndChild();
+
+    ImGui::EndGroup();
 }
 
 // ─── Time Tracking View ──────────────────────────────────────────────────────
@@ -606,6 +970,10 @@ void GuiManager::render_pomodoro() {
             TimerConfig config = engine_->config();
             config.focus_duration_sec = focus_min_ * 60;
             engine_->set_config(config);
+            
+            // Sync and save configuration
+            config_.focus_duration_sec = focus_min_ * 60;
+            ConfigManager::save(config_, config_path_);
         }
         
         ImGui::SetNextItemWidth(col_width - 40.0f);
@@ -613,6 +981,10 @@ void GuiManager::render_pomodoro() {
             TimerConfig config = engine_->config();
             config.short_break_sec = short_break_min_ * 60;
             engine_->set_config(config);
+            
+            // Sync and save configuration
+            config_.short_break_sec = short_break_min_ * 60;
+            ConfigManager::save(config_, config_path_);
         }
         ImGui::Spacing();
         ImGui::Spacing();
@@ -743,7 +1115,7 @@ void GuiManager::render_pomodoro() {
     ImGui::EndChild();
 }
 
-// ─── Analytics View (Stacked Bar Chart Drawing) ──────────────────────────────
+// ─── Analytics View (Stacked Bar Chart & Donut Chart Drawing) ────────────────
 void GuiManager::render_analytics() {
     ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
     ImGui::PushFont(header_font);
@@ -797,7 +1169,7 @@ void GuiManager::render_analytics() {
     // Render bar chart using ImDrawList
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     ImVec2 chart_pos = ImGui::GetCursorScreenPos();
-    ImVec2 chart_sz = ImVec2(ImGui::GetContentRegionAvail().x - 20.0f, 200.0f);
+    ImVec2 chart_sz = ImVec2(ImGui::GetContentRegionAvail().x - 20.0f, 180.0f);
     
     // Draw background grid frame
     draw_list->AddRect(chart_pos, ImVec2(chart_pos.x + chart_sz.x, chart_pos.y + chart_sz.y), IM_COL32(40, 40, 40, 255), 4.0f);
@@ -837,7 +1209,134 @@ void GuiManager::render_analytics() {
     }
 
     ImGui::Dummy(ImVec2(0.0f, chart_sz.y + 10.0f));
+    
+    // --- Category Breakdown (Donut Chart) ---
     ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Text("Time by Category Tag (Last 7 Days):");
+    ImGui::Spacing();
+
+    std::map<std::string, int> tag_secs;
+    int total_tagged_secs = 0;
+    
+    if (sessions.is_ok()) {
+        for (const auto& s : sessions.value()) {
+            if (s.state == "completed") {
+                std::string tag_str = s.tags;
+                if (tag_str.empty()) {
+                    tag_secs["Untagged"] += s.duration_sec;
+                    total_tagged_secs += s.duration_sec;
+                } else {
+                    // split comma-separated tags
+                    std::stringstream ss(tag_str);
+                    std::string token;
+                    while (std::getline(ss, token, ',')) {
+                        // Trim token
+                        auto trim_start = std::find_if_not(token.begin(), token.end(), ::isspace);
+                        auto trim_end = std::find_if_not(token.rbegin(), token.rend(), ::isspace).base();
+                        std::string clean_tag = trim_start < trim_end ? std::string(trim_start, trim_end) : "";
+                        if (!clean_tag.empty()) {
+                            tag_secs[clean_tag] += s.duration_sec;
+                            total_tagged_secs += s.duration_sec;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (total_tagged_secs > 0) {
+        // Left part: donut chart, Right part: legends
+        ImGui::BeginGroup();
+        
+        ImVec2 donut_pos = ImGui::GetCursorScreenPos();
+        ImVec2 donut_size = ImVec2(150, 150);
+        ImDrawList* d_list = ImGui::GetWindowDrawList();
+        
+        // Draw spacing dummy
+        ImGui::Dummy(donut_size);
+        
+        ImVec2 donut_center = ImVec2(donut_pos.x + donut_size.x * 0.5f, donut_pos.y + donut_size.y * 0.5f);
+        float mid_radius = 50.0f;
+        float thickness = 18.0f;
+        
+        ImU32 colors_list[] = {
+            IM_COL32(59, 130, 246, 255),  // blue
+            IM_COL32(16, 185, 129, 255),  // green
+            IM_COL32(139, 92, 246, 255),  // purple
+            IM_COL32(245, 158, 11, 255),  // amber
+            IM_COL32(236, 72, 153, 255),  // pink
+            IM_COL32(107, 114, 128, 255)   // grey
+        };
+        
+        float cur_angle = -3.14159265f / 2.0f; // start at 12 o'clock
+        int color_idx = 0;
+        
+        struct TagItem {
+            std::string name;
+            int seconds;
+            ImU32 color;
+        };
+        std::vector<TagItem> items;
+        for (const auto& pair : tag_secs) {
+            TagItem item;
+            item.name = pair.first;
+            item.seconds = pair.second;
+            item.color = colors_list[color_idx % 6];
+            color_idx++;
+            items.push_back(item);
+        }
+        
+        // Sort items by seconds descending
+        std::sort(items.begin(), items.end(), [](const TagItem& a, const TagItem& b) {
+            return a.seconds > b.seconds;
+        });
+
+        // Draw donut sectors
+        for (const auto& item : items) {
+            float sweep = (static_cast<float>(item.seconds) / static_cast<float>(total_tagged_secs)) * 2.0f * 3.14159265f;
+            if (sweep > 0.001f) {
+                d_list->PathClear();
+                d_list->PathArcTo(donut_center, mid_radius, cur_angle, cur_angle + sweep, 64);
+                d_list->PathStroke(item.color, 0, thickness);
+                cur_angle += sweep;
+            }
+        }
+        
+        // Draw inner and outer border rings
+        d_list->AddCircle(donut_center, mid_radius - thickness * 0.5f, IM_COL32(40, 40, 40, 255), 64, 1.0f);
+        d_list->AddCircle(donut_center, mid_radius + thickness * 0.5f, IM_COL32(40, 40, 40, 255), 64, 1.0f);
+        
+        // Draw total hours inside
+        float total_hours = static_cast<float>(total_tagged_secs) / 3600.0f;
+        char hrs_buf[32];
+        sprintf_s(hrs_buf, "%.1f h", total_hours);
+        ImVec2 text_sz = ImGui::CalcTextSize(hrs_buf);
+        d_list->AddText(ImVec2(donut_center.x - text_sz.x * 0.5f, donut_center.y - text_sz.y * 0.5f), IM_COL32(240, 240, 240, 255), hrs_buf);
+        
+        ImGui::EndGroup();
+        
+        ImGui::SameLine(220.0f);
+        
+        // Right part: Legend list
+        ImGui::BeginGroup();
+        ImGui::Text("Categories:");
+        ImGui::Spacing();
+        for (const auto& item : items) {
+            ImVec2 legend_pos = ImGui::GetCursorScreenPos();
+            d_list->AddRectFilled(ImVec2(legend_pos.x, legend_pos.y + 4.0f), ImVec2(legend_pos.x + 12.0f, legend_pos.y + 16.0f), item.color, 2.0f);
+            
+            ImGui::Indent(20.0f);
+            float tag_pct = (static_cast<float>(item.seconds) / static_cast<float>(total_tagged_secs)) * 100.0f;
+            ImGui::Text("%s: %s (%.1f%%)", item.name.c_str(), format_duration(item.seconds).c_str(), tag_pct);
+            ImGui::Unindent(20.0f);
+            ImGui::Spacing();
+        }
+        ImGui::EndGroup();
+    } else {
+        ImGui::TextDisabled("No categorised session data found for this period.");
+    }
 }
 
 // ─── Settings View ───────────────────────────────────────────────────────────
@@ -849,7 +1348,41 @@ void GuiManager::render_settings() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::Text("Adjust Timer Config (Minutes):");
+    // 1. Color Theme Selection
+    ImGui::Text("Interface Theme Preset:");
+    const char* themes[] = { "Midnight Blue (Default)", "Obsidian Dark", "Forest Mint", "Slate Classic" };
+    int current_theme = config_.theme_index;
+    ImGui::SetNextItemWidth(300);
+    if (ImGui::Combo("Theme##select", &current_theme, themes, IM_ARRAYSIZE(themes))) {
+        config_.theme_index = current_theme;
+        apply_theme(current_theme);
+        ConfigManager::save(config_, config_path_);
+    }
+    ImGui::Spacing();
+
+    // 2. Notification Options
+    ImGui::Text("Notifications:");
+    bool sounds = config_.sound_enabled;
+    if (ImGui::Checkbox("Enable Sound Alerts", &sounds)) {
+        config_.sound_enabled = sounds;
+        ConfigManager::save(config_, config_path_);
+    }
+    ImGui::Spacing();
+
+    // 3. Weekly Hours Target
+    ImGui::Text("Weekly Goal Target:");
+    int weekly_hours = config_.weekly_goal_hours;
+    ImGui::SetNextItemWidth(200);
+    if (ImGui::SliderInt("Hours/week", &weekly_hours, 1, 100)) {
+        config_.weekly_goal_hours = weekly_hours;
+        ConfigManager::save(config_, config_path_);
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // 4. Timer durations
+    ImGui::Text("Focus & Break Durations (Minutes):");
     ImGui::Spacing();
 
     ImGui::SetNextItemWidth(200);
@@ -870,15 +1403,24 @@ void GuiManager::render_settings() {
     ImGui::Spacing();
     ImGui::Spacing();
 
-    if (ImGui::Button("Save Configuration", ImVec2(160, 32))) {
-        TimerConfig config;
-        config.focus_duration_sec = focus_min_ * 60;
-        config.short_break_sec    = short_break_min_ * 60;
-        config.long_break_sec     = long_break_min_ * 60;
-        config.sessions_before_long_break = sessions_before_long_;
+    if (ImGui::Button("Save Timer Configurations", ImVec2(220, 32))) {
+        // Sync values to config
+        config_.focus_duration_sec = focus_min_ * 60;
+        config_.short_break_sec    = short_break_min_ * 60;
+        config_.long_break_sec     = long_break_min_ * 60;
+        config_.sessions_before_long_break = sessions_before_long_;
 
-        engine_->set_config(config);
-        logger_->info("GuiManager", "Updated timer configuration values");
+        // Update active engine config
+        TimerConfig engine_cfg;
+        engine_cfg.focus_duration_sec = config_.focus_duration_sec;
+        engine_cfg.short_break_sec    = config_.short_break_sec;
+        engine_cfg.long_break_sec     = config_.long_break_sec;
+        engine_cfg.sessions_before_long_break = config_.sessions_before_long_break;
+        engine_->set_config(engine_cfg);
+
+        // Save
+        ConfigManager::save(config_, config_path_);
+        logger_->info("GuiManager", "Saved updated timer configuration settings");
     }
 }
 

@@ -3,8 +3,10 @@
 #include "pomodoro/database_manager.h"
 #include "pomodoro/logger.h"
 #include "pomodoro/types.h"
+#include "pomodoro/config_manager.h"
 #include <string>
 #include <vector>
+#include <filesystem>
 
 struct ImFont;
 
@@ -13,7 +15,7 @@ namespace tempus {
 /// Manages the ImGui user interface, styles, navigation, and view rendering.
 class GuiManager {
 public:
-    GuiManager(TimerEngine* engine, SqliteDatabaseManager* db, ILogger* logger);
+    GuiManager(TimerEngine* engine, SqliteDatabaseManager* db, ILogger* logger, std::filesystem::path config_path);
     ~GuiManager() = default;
 
     /// Initialize ImGui dark style theme and fonts.
@@ -26,10 +28,14 @@ public:
 private:
     // ─── Individual view renderers ───────────────────────────────────────────
     void render_sidebar();
+    void render_dashboard();
     void render_time_tracking();
     void render_pomodoro();
     void render_analytics();
     void render_settings();
+
+    // ─── Style & Styling presets ─────────────────────────────────────────────
+    void apply_theme(int theme_idx);
 
     // ─── Details editing panel helper ────────────────────────────────────────
     void render_details_panel();
@@ -39,9 +45,11 @@ private:
     TimerEngine*           engine_;
     SqliteDatabaseManager* db_;
     ILogger*               logger_;
+    std::filesystem::path  config_path_;
+    AppConfig              config_;
 
     // ─── Navigation state ────────────────────────────────────────────────────
-    int active_tab_ = 0;   // 0 = Time Tracking, 1 = Pomodoro, 2 = Analytics, 3 = Settings
+    int active_tab_ = 0;   // 0 = Dashboard, 1 = Time Tracking, 2 = Pomodoro, 3 = Analytics, 4 = Settings
     int last_tab_ = -1;
     float fade_alpha_ = 0.0f;
 

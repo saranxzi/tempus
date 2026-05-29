@@ -13,6 +13,7 @@ set(TEST_SOURCES
     test_timer_engine.cpp
     test_database_manager.cpp
     test_state_recovery.cpp
+    test_config_manager.cpp
 )
 
 # Engine sources (recompiled for tests — avoids linking WinMain).
@@ -22,6 +23,7 @@ set(ENGINE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/database_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/state_recovery.cpp
     ${CMAKE_SOURCE_DIR}/src/timer_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/config_manager.cpp
 )
 
 add_executable(tempus_tests ${TEST_SOURCES} ${ENGINE_SOURCES})

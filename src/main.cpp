@@ -114,7 +114,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     
-    GuiManager gui(&engine, &db, &logger);
+    GuiManager gui(&engine, &db, &logger, paths.data_dir() / "config.txt");
     gui.initialize_style();
 
     // Setup Platform/Renderer backends

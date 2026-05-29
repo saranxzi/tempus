@@ -85,6 +85,7 @@ set(TEMPUS_SOURCES
     src/database_manager.cpp
     src/state_recovery.cpp
     src/timer_engine.cpp
+    src/config_manager.cpp
 )
 
 add_executable(Tempus WIN32 ${TEMPUS_SOURCES})
