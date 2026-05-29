@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tempus — Time Tracker</title>
+  <link rel="stylesheet" href="main.css" />
+</head>
+<body>
+  <!-- ═══ Custom Title Bar ════════════════════════════════════════════════ -->
+  <div id="titlebar">
+    <span class="title-text">⏱ Tempus</span>
+    <div class="window-controls">
+      <button id="btn-minimize" data-tooltip="Minimize">─</button>
+      <button id="btn-maximize" data-tooltip="Maximize">□</button>
+      <button id="btn-close" class="close" data-tooltip="Close">✕</button>
+    </div>
+  </div>
+
+  <!-- ═══ App Shell ═══════════════════════════════════════════════════════ -->
+  <div id="app">
+    <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+    <nav id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-label">Menu</div>
+        <div class="nav-item active" data-view="dashboard" id="nav-dashboard">
+          <span class="icon">📊</span>
+          <span>Dashboard</span>
+        </div>
+        <div class="nav-item" data-view="pomodoro" id="nav-pomodoro">
+          <span class="icon">🍅</span>
+          <span>Pomodoro</span>
+        </div>
+        <div class="nav-item" data-view="stopwatch" id="nav-stopwatch">
+          <span class="icon">⏱️</span>
+          <span>Stopwatch</span>
+        </div>
+        <div class="nav-item" data-view="time-tracking" id="nav-time-tracking">
+          <span class="icon">📋</span>
+          <span>Time Log</span>
+        </div>
+        <div class="nav-item" data-view="analytics" id="nav-analytics">
+          <span class="icon">📈</span>
+          <span>Analytics</span>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">Manage</div>
+        <div class="nav-item" data-view="tasks" id="nav-tasks">
+          <span class="icon">🗂️</span>
+          <span>Tasks</span>
+        </div>
+        <div class="nav-item" data-view="settings" id="nav-settings">
+          <span class="icon">⚙️</span>
+          <span>Settings</span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ── Main Content Area ────────────────────────────────────────────── -->
+    <main id="main-content">
+      <!-- Views are rendered dynamically by main.js -->
+    </main>
+  </div>
+
+  <!-- ═══ Mini Stopwatch Overlay (hidden by default) ═════════════════════ -->
+  <div id="mini-stopwatch" class="mini-stopwatch hidden">
+    <div>
+      <div class="mini-task-name" id="mini-task-name">—</div>
+      <div class="mini-time" id="mini-time">00:00:00</div>
+    </div>
+    <button class="btn btn-sm btn-ghost" id="mini-pause" data-tooltip="Pause">⏸</button>
+    <button class="btn btn-sm btn-danger" id="mini-stop" data-tooltip="Stop & Save">⏹</button>
+    <button class="btn btn-sm btn-ghost" id="mini-pin" data-tooltip="Always on top">📌</button>
+  </div>
+
+  <!-- ═══ Modal Container ════════════════════════════════════════════════ -->
+  <div id="modal-root"></div>
+
+  <script src="main.js"></script>
+</body>
+</html>

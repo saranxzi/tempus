@@ -1,0 +1,12 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Tempus",
+  "outputfilename": "Tempus",
+  "wailsjsdir": "./frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "author": {
+    "name": "Saran",
+    "email": ""
+  }
+}

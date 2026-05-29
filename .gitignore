@@ -1,33 +1,25 @@
-# Build output
-build/
-out/
-cmake-build-*/
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+tempus
 
-# IDE / Editor
-.vs/
-.vscode/
-*.suo
-*.user
-*.sln.docstates
+# Build output
+/build/bin/
+/build/appicon.png
+
+# Go
+*.test
+
+# IDE
 .idea/
+.vscode/
 *.swp
+*.swo
 *~
 
-# Compiled objects
-*.obj
-*.o
-*.a
-*.lib
-*.exe
-*.dll
-*.pdb
-*.ilk
-*.exp
-
 # OS
-Thumbs.db
-Desktop.ini
 .DS_Store
-
-# State recovery (runtime artifact)
-state.json
+Thumbs.db
