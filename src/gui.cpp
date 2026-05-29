@@ -7,6 +7,8 @@
 #include <ctime>
 #include <algorithm>
 #include <map>
+#include <filesystem>
+#include <cmath>
 
 namespace tempus {
 
@@ -56,6 +58,18 @@ GuiManager::GuiManager(TimerEngine* engine, SqliteDatabaseManager* db, ILogger* 
 
 // Styling initialization (WorkingHours style)
 void GuiManager::initialize_style() {
+    ImGuiIO& io = ImGui::GetIO();
+    std::string font_path = "C:\\Windows\\Fonts\\segoeui.ttf";
+    if (std::filesystem::exists(font_path)) {
+        font_regular_ = io.Fonts->AddFontFromFileTTF(font_path.c_str(), 18.0f);
+        font_header_  = io.Fonts->AddFontFromFileTTF(font_path.c_str(), 24.0f);
+        font_large_   = io.Fonts->AddFontFromFileTTF(font_path.c_str(), 56.0f);
+    } else {
+        font_regular_ = io.Fonts->AddFontDefault();
+        font_header_  = font_regular_;
+        font_large_   = font_regular_;
+    }
+
     ImGuiStyle& style = ImGui::GetStyle();
 
     // Rounding & Spacing
@@ -125,10 +139,22 @@ void GuiManager::render(bool& running) {
 
     ImGui::SameLine();
 
+    // Tab Switch Transition Fade-in Animation
+    if (active_tab_ != last_tab_) {
+        last_tab_ = active_tab_;
+        fade_alpha_ = 0.0f;
+    }
+    if (fade_alpha_ < 1.0f) {
+        fade_alpha_ += ImGui::GetIO().DeltaTime * 4.0f; // 250ms fade-in
+        if (fade_alpha_ > 1.0f) fade_alpha_ = 1.0f;
+    }
+
     // Right Content Panel
     ImGui::BeginGroup();
     ImVec2 content_size = ImGui::GetContentRegionAvail();
     ImGui::BeginChild("MainContent", ImVec2(content_size.x, content_size.y), false);
+    
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade_alpha_);
 
     switch (active_tab_) {
         case 0: render_time_tracking(); break;
@@ -138,6 +164,7 @@ void GuiManager::render(bool& running) {
         default: break;
     }
 
+    ImGui::PopStyleVar();
     ImGui::EndChild();
     ImGui::EndGroup();
 
@@ -150,8 +177,11 @@ void GuiManager::render_sidebar() {
 
     // Title / Logo
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), "  TEMPUS");
-    ImGui::TextDisabled("   Time Utility");
+    ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(header_font);
+    ImGui::TextColored(ImVec4(0.00f, 0.60f, 1.00f, 1.00f), " TEMPUS");
+    ImGui::PopFont();
+    ImGui::TextDisabled("  Time Utility");
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -183,7 +213,10 @@ void GuiManager::render_sidebar() {
 void GuiManager::render_time_tracking() {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 6));
 
+    ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(header_font);
     ImGui::Text("Time tracking");
+    ImGui::PopFont();
     ImGui::Spacing();
 
     // Top action row
@@ -271,8 +304,10 @@ void GuiManager::render_time_tracking() {
         // Tags Pill
         if (!session.tags.empty()) {
             ImVec2 text_sz = ImGui::CalcTextSize(session.task_name.c_str());
+            ImVec2 tag_text_sz = ImGui::CalcTextSize(session.tags.c_str());
             ImVec2 pill_pos = ImVec2(p_min.x + 20.0f + text_sz.x, p_min.y + 9.0f);
-            draw_list->AddRectFilled(pill_pos, ImVec2(pill_pos.x + 60.0f, pill_pos.y + 18.0f), IM_COL32(0, 120, 212, 100), 3.0f);
+            float pill_width = tag_text_sz.x + 12.0f;
+            draw_list->AddRectFilled(pill_pos, ImVec2(pill_pos.x + pill_width, pill_pos.y + 18.0f), IM_COL32(0, 120, 212, 100), 3.0f);
             draw_list->AddText(ImVec2(pill_pos.x + 6.0f, pill_pos.y + 2.0f), IM_COL32(180, 210, 255, 255), session.tags.c_str());
         }
 
@@ -346,7 +381,10 @@ void GuiManager::render_time_tracking() {
 void GuiManager::render_details_panel() {
     ImGui::BeginChild("DetailsPanel", ImVec2(270, 0), true);
 
-    ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Edit session details");
+    ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(header_font);
+    ImGui::TextColored(ImVec4(0.0f, 0.6f, 1.0f, 1.0f), "Edit Session");
+    ImGui::PopFont();
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -379,6 +417,19 @@ void GuiManager::render_details_panel() {
     ImGui::PopItemWidth();
     end_h_ = std::clamp(end_h_, 0, 23);
     end_m_ = std::clamp(end_m_, 0, 59);
+    ImGui::Spacing();
+
+    // Dynamic duration preview
+    int preview_sec = 0;
+    int start_total = start_h_ * 60 + start_m_;
+    int end_total = end_h_ * 60 + end_m_;
+    if (end_total >= start_total) {
+        preview_sec = (end_total - start_total) * 60;
+    } else {
+        preview_sec = ((1440 - start_total) + end_total) * 60;
+    }
+    std::string preview_text = "Duration: " + format_duration(preview_sec);
+    ImGui::TextColored(ImVec4(0.00f, 0.75f, 1.00f, 1.00f), "%s", preview_text.c_str());
     ImGui::Spacing();
 
     ImGui::Separator();
@@ -461,7 +512,10 @@ void GuiManager::save_current_details() {
 
 // ─── Pomodoro View (with custom drawing) ─────────────────────────────────────
 void GuiManager::render_pomodoro() {
+    ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(header_font);
     ImGui::Text("Pomodoro");
+    ImGui::PopFont();
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -470,26 +524,104 @@ void GuiManager::render_pomodoro() {
     float col_width = avail.x * 0.5f;
 
     ImGui::BeginGroup(); // Left column (Controls)
+    
+    ImGui::Text("Task Name:");
     ImGui::SetNextItemWidth(col_width - 40.0f);
     ImGui::InputTextWithHint("##TaskInput", "What are you working on?", task_name_input_, sizeof(task_name_input_));
     ImGui::Spacing();
     
+    // Autocomplete Suggestions
+    std::vector<std::string> suggestions;
+    for (const auto& s : cached_sessions_) {
+        if (suggestions.size() >= 5) break;
+        if (s.task_name.empty() || s.task_name == "Manual Entry" || s.task_name == "Focus Session") continue;
+        if (std::find(suggestions.begin(), suggestions.end(), s.task_name) == suggestions.end()) {
+            suggestions.push_back(s.task_name);
+        }
+    }
+    if (!suggestions.empty()) {
+        ImGui::TextDisabled("Recent tasks:");
+        ImGui::Indent(4.0f);
+        for (size_t i = 0; i < suggestions.size(); ++i) {
+            if (i > 0) ImGui::SameLine();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+            if (ImGui::Button(suggestions[i].c_str())) {
+                strncpy_s(task_name_input_, suggestions[i].c_str(), _TRUNCATE);
+            }
+            ImGui::PopStyleVar();
+        }
+        ImGui::Unindent(4.0f);
+        ImGui::Spacing();
+    }
+
+    ImGui::Text("Tags:");
     ImGui::SetNextItemWidth(col_width - 40.0f);
     ImGui::InputTextWithHint("##TagsInput", "Category tags (comma-separated)...", tags_input_, sizeof(tags_input_));
     ImGui::Spacing();
 
+    // Quick tag selector buttons
+    const char* quick_tags[] = { "Work", "Study", "Coding", "Meeting", "Personal" };
+    ImGui::TextDisabled("Quick tags:");
+    ImGui::Indent(4.0f);
+    for (size_t i = 0; i < 5; ++i) {
+        if (i > 0) ImGui::SameLine();
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+        if (ImGui::Button(quick_tags[i])) {
+            std::string current_tags = tags_input_;
+            if (current_tags.empty()) {
+                current_tags = quick_tags[i];
+            } else {
+                size_t pos = current_tags.find(quick_tags[i]);
+                if (pos == std::string::npos) {
+                    if (current_tags.back() == ',' || current_tags.back() == ' ') {
+                        if (current_tags.back() == ',') current_tags += " ";
+                        current_tags += quick_tags[i];
+                    } else {
+                        current_tags += ", ";
+                        current_tags += quick_tags[i];
+                    }
+                }
+            }
+            strncpy_s(tags_input_, current_tags.c_str(), _TRUNCATE);
+        }
+        ImGui::PopStyleVar();
+    }
+    ImGui::Unindent(4.0f);
+    ImGui::Spacing();
+
+    ImGui::Text("Details / Notes:");
     ImGui::SetNextItemWidth(col_width - 40.0f);
     ImGui::InputTextWithHint("##DetailsInput", "Rich session notes...", details_input_, sizeof(details_input_));
     ImGui::Spacing();
     ImGui::Spacing();
 
     TimerState state = engine_->state();
-    
+
+    // Quick Duration Setup (sliders)
+    if (state == TimerState::Idle) {
+        ImGui::Text("Quick Setup:");
+        
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        if (ImGui::SliderInt("Focus (min)", &focus_min_, 1, 60)) {
+            TimerConfig config = engine_->config();
+            config.focus_duration_sec = focus_min_ * 60;
+            engine_->set_config(config);
+        }
+        
+        ImGui::SetNextItemWidth(col_width - 40.0f);
+        if (ImGui::SliderInt("Break (min)", &short_break_min_, 1, 30)) {
+            TimerConfig config = engine_->config();
+            config.short_break_sec = short_break_min_ * 60;
+            engine_->set_config(config);
+        }
+        ImGui::Spacing();
+        ImGui::Spacing();
+    }
+
     if (state == TimerState::Idle) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.00f, 0.47f, 0.83f, 1.00f));
         if (ImGui::Button("Start Focus", ImVec2(col_width - 40.0f, 40.0f))) {
             engine_->start(task_name_input_);
-            // Set details / tags into active tracking session
             engine_->set_active_tags_and_details(tags_input_, details_input_);
         }
         ImGui::PopStyleColor();
@@ -508,7 +640,6 @@ void GuiManager::render_pomodoro() {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
         if (ImGui::Button("Stop Focus (Log Session)", ImVec2(col_width - 40.0f, 32.0f))) {
             engine_->stop();
-            // Clear inputs
             tags_input_[0] = '\0';
             details_input_[0] = '\0';
         }
@@ -549,6 +680,37 @@ void GuiManager::render_pomodoro() {
     else if (state == TimerState::LongBreak)  ring_col = IM_COL32(106, 27, 154, 255); // purple
     else if (state == TimerState::Paused)     ring_col = IM_COL32(239, 108, 0, 255);   // orange
 
+    float pulse_thickness = 5.0f;
+    ImU32 arc_col = ring_col;
+    if (state == TimerState::Focusing) {
+        float t = static_cast<float>(ImGui::GetTime());
+        float pulse = sinf(t * 2.5f);
+        float pulse_norm = (pulse + 1.0f) * 0.5f;
+        pulse_thickness = 4.5f + pulse_norm * 2.0f;
+        int alpha = static_cast<int>(180.0f + pulse_norm * 75.0f);
+        arc_col = IM_COL32(46, 125, 50, alpha);
+    } else if (state == TimerState::Paused) {
+        float t = static_cast<float>(ImGui::GetTime());
+        float pulse = sinf(t * 4.0f);
+        float pulse_norm = (pulse + 1.0f) * 0.5f;
+        int alpha = static_cast<int>(100.0f + pulse_norm * 155.0f);
+        arc_col = IM_COL32(239, 108, 0, alpha);
+    } else if (state == TimerState::ShortBreak) {
+        float t = static_cast<float>(ImGui::GetTime());
+        float pulse = sinf(t * 1.5f);
+        float pulse_norm = (pulse + 1.0f) * 0.5f;
+        pulse_thickness = 4.8f + pulse_norm * 1.0f;
+        int alpha = static_cast<int>(200.0f + pulse_norm * 55.0f);
+        arc_col = IM_COL32(21, 101, 192, alpha);
+    } else if (state == TimerState::LongBreak) {
+        float t = static_cast<float>(ImGui::GetTime());
+        float pulse = sinf(t * 1.0f);
+        float pulse_norm = (pulse + 1.0f) * 0.5f;
+        pulse_thickness = 4.8f + pulse_norm * 1.0f;
+        int alpha = static_cast<int>(200.0f + pulse_norm * 55.0f);
+        arc_col = IM_COL32(106, 27, 154, alpha);
+    }
+
     // Draw using ImDrawList PathArcTo & PathStroke
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     ImVec2 screen_center = ImVec2(ImGui::GetCursorScreenPos().x + center.x, ImGui::GetCursorScreenPos().y + center.y);
@@ -563,28 +725,30 @@ void GuiManager::render_pomodoro() {
         float end_angle = start_angle + fraction * 2.0f * IM_PI;
         draw_list->PathClear();
         draw_list->PathArcTo(screen_center, radius, start_angle, end_angle, 64);
-        draw_list->PathStroke(ring_col, 0, 5.0f);
+        draw_list->PathStroke(arc_col, 0, pulse_thickness);
     }
 
-    // Large Countdown Text
-    ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // default font
-    ImGui::SetWindowFontScale(2.4f);
+    // Large Countdown Text using crisp large font
+    ImFont* count_font = font_large_ ? font_large_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(count_font);
     ImVec2 text_sz = ImGui::CalcTextSize(text.c_str());
-    draw_list->AddText(ImVec2(screen_center.x - text_sz.x * 0.5f, screen_center.y - text_sz.y * 0.5f - 5.0f), IM_COL32(245, 245, 245, 255), text.c_str());
-    ImGui::SetWindowFontScale(1.0f);
+    draw_list->AddText(count_font, count_font->FontSize, ImVec2(screen_center.x - text_sz.x * 0.5f, screen_center.y - text_sz.y * 0.5f - 10.0f), IM_COL32(245, 245, 245, 255), text.c_str());
     ImGui::PopFont();
 
     // Active state title below text
     std::string state_text = to_string(state);
     ImVec2 st_sz = ImGui::CalcTextSize(state_text.c_str());
-    draw_list->AddText(ImVec2(screen_center.x - st_sz.x * 0.5f, screen_center.y + 20.0f), IM_COL32(180, 180, 180, 255), state_text.c_str());
+    draw_list->AddText(ImVec2(screen_center.x - st_sz.x * 0.5f, screen_center.y + 25.0f), IM_COL32(180, 180, 180, 255), state_text.c_str());
 
     ImGui::EndChild();
 }
 
 // ─── Analytics View (Stacked Bar Chart Drawing) ──────────────────────────────
 void GuiManager::render_analytics() {
+    ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(header_font);
     ImGui::Text("Analytics");
+    ImGui::PopFont();
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -678,7 +842,10 @@ void GuiManager::render_analytics() {
 
 // ─── Settings View ───────────────────────────────────────────────────────────
 void GuiManager::render_settings() {
+    ImFont* header_font = font_header_ ? font_header_ : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::PushFont(header_font);
     ImGui::Text("Settings");
+    ImGui::PopFont();
     ImGui::Separator();
     ImGui::Spacing();
 

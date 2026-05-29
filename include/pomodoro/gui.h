@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+struct ImFont;
+
 namespace tempus {
 
 /// Manages the ImGui user interface, styles, navigation, and view rendering.
@@ -40,6 +42,13 @@ private:
 
     // ─── Navigation state ────────────────────────────────────────────────────
     int active_tab_ = 0;   // 0 = Time Tracking, 1 = Pomodoro, 2 = Analytics, 3 = Settings
+    int last_tab_ = -1;
+    float fade_alpha_ = 0.0f;
+
+    // Fonts
+    ImFont* font_regular_ = nullptr;
+    ImFont* font_large_ = nullptr;
+    ImFont* font_header_ = nullptr;
 
     // ─── Time Tracking View state ────────────────────────────────────────────
     char                   search_query_[128] = "";

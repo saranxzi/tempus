@@ -28,6 +28,8 @@ TEST_CASE("StateRecovery: round-trip serialization", "[recovery]") {
     snap.state         = TimerState::Focusing;
     snap.remaining_sec = 742;
     snap.current_task  = "Write documentation";
+    snap.tags          = "docs,writing";
+    snap.details       = "Writing final walkthrough detail documentation notes.";
     snap.session_count = 2;
     snap.timestamp     = 1700000500;
 
@@ -41,6 +43,8 @@ TEST_CASE("StateRecovery: round-trip serialization", "[recovery]") {
     REQUIRE(restored.state         == TimerState::Focusing);
     REQUIRE(restored.remaining_sec == 742);
     REQUIRE(restored.current_task  == "Write documentation");
+    REQUIRE(restored.tags          == "docs,writing");
+    REQUIRE(restored.details       == "Writing final walkthrough detail documentation notes.");
     REQUIRE(restored.session_count == 2);
     REQUIRE(restored.timestamp     == 1700000500);
 

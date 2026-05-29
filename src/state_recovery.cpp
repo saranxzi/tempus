@@ -34,6 +34,8 @@ std::string snapshot_to_json(const TimerSnapshot& snap) {
         << "  \"state\": \""       << to_string(snap.state) << "\",\n"
         << "  \"remaining_sec\": " << snap.remaining_sec     << ",\n"
         << "  \"current_task\": \"" << json_escape(snap.current_task) << "\",\n"
+        << "  \"tags\": \""         << json_escape(snap.tags)         << "\",\n"
+        << "  \"details\": \""      << json_escape(snap.details)      << "\",\n"
         << "  \"session_count\": " << snap.session_count     << ",\n"
         << "  \"timestamp\": "     << snap.timestamp         << "\n"
         << "}";
@@ -88,6 +90,10 @@ Result<TimerSnapshot> snapshot_from_json(const std::string& json) {
             catch (...) { return Result<TimerSnapshot>::err("Invalid remaining_sec"); }
         } else if (line.find("\"current_task\"") != std::string::npos) {
             snap.current_task = trim_json_string(extract_value(line));
+        } else if (line.find("\"tags\"") != std::string::npos) {
+            snap.tags = trim_json_string(extract_value(line));
+        } else if (line.find("\"details\"") != std::string::npos) {
+            snap.details = trim_json_string(extract_value(line));
         } else if (line.find("\"session_count\"") != std::string::npos) {
             try { snap.session_count = std::stoi(extract_value(line)); }
             catch (...) { return Result<TimerSnapshot>::err("Invalid session_count"); }
