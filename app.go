@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -10,8 +12,13 @@ import (
 
 // App struct holds the application state.
 type App struct {
-	ctx context.Context
-	db  *Database
+	ctx          context.Context
+	db           *Database
+	isMiniMode   bool
+	normalWidth  int
+	normalHeight int
+	miniWidth    int
+	miniHeight   int
 }
 
 // NewApp creates a new App application struct.
@@ -30,9 +37,55 @@ func (a *App) startup(ctx context.Context) {
 	a.db = db
 }
 
+// restore window
+func (a *App) domReady(ctx context.Context) {
+	if a.db == nil {
+		return
+	}
+	
+	// load normal size
+	widthStr, _ := a.db.GetSetting("window_width")
+	heightStr, _ := a.db.GetSetting("window_height")
+	var w, h int
+	if widthStr != "" && heightStr != "" {
+		fmt.Sscanf(widthStr, "%d", &w)
+		fmt.Sscanf(heightStr, "%d", &h)
+		if w >= 900 && h >= 600 {
+			a.normalWidth = w
+			a.normalHeight = h
+			wailsRuntime.WindowSetSize(ctx, w, h)
+		}
+	}
+
+	miniWidthStr, _ := a.db.GetSetting("window_mini_width")
+	miniHeightStr, _ := a.db.GetSetting("window_mini_height")
+	var mw, mh int
+	if miniWidthStr != "" && miniHeightStr != "" {
+		fmt.Sscanf(miniWidthStr, "%d", &mw)
+		fmt.Sscanf(miniHeightStr, "%d", &mh)
+		if mw >= 100 && mh >= 50 {
+			a.miniWidth = mw
+			a.miniHeight = mh
+		}
+	}
+}
+
 // shutdown is called at application termination.
 func (a *App) shutdown(ctx context.Context) {
 	if a.db != nil {
+		if !a.isMiniMode {
+			w, h := wailsRuntime.WindowGetSize(ctx)
+			if w >= 900 && h >= 600 {
+				a.db.SaveSetting("window_width", fmt.Sprintf("%d", w))
+				a.db.SaveSetting("window_height", fmt.Sprintf("%d", h))
+			}
+		} else {
+			w, h := wailsRuntime.WindowGetSize(ctx)
+			if w < 900 && h < 600 {
+				a.db.SaveSetting("window_mini_width", fmt.Sprintf("%d", w))
+				a.db.SaveSetting("window_mini_height", fmt.Sprintf("%d", h))
+			}
+		}
 		a.db.Close()
 	}
 }
@@ -110,11 +163,20 @@ func (a *App) GetTasks() ([]Task, error) {
 
 // AddTask creates a new task.
 func (a *App) AddTask(name, color string) (int64, error) {
+	if err := a.validateTask(name, color); err != nil {
+		return 0, err
+	}
 	return a.db.AddTask(name, color)
 }
 
 // UpdateTask modifies a task.
 func (a *App) UpdateTask(id int64, name, color string) error {
+	if id <= 0 {
+		return errors.New("invalid task ID")
+	}
+	if err := a.validateTask(name, color); err != nil {
+		return err
+	}
 	return a.db.UpdateTask(id, name, color)
 }
 
@@ -132,11 +194,20 @@ func (a *App) GetTimeEntries(startDate, endDate string) ([]TimeEntry, error) {
 
 // AddTimeEntry creates a new time entry.
 func (a *App) AddTimeEntry(taskID int64, startTime, endTime string, duration int64, note string) (int64, error) {
+	if err := a.validateTimeEntry(taskID, startTime, endTime, duration, note); err != nil {
+		return 0, err
+	}
 	return a.db.AddTimeEntry(taskID, startTime, endTime, duration, note)
 }
 
 // UpdateTimeEntry modifies an existing time entry.
 func (a *App) UpdateTimeEntry(id, taskID int64, startTime, endTime string, duration int64, note string) error {
+	if id <= 0 {
+		return errors.New("invalid entry ID")
+	}
+	if err := a.validateTimeEntry(taskID, startTime, endTime, duration, note); err != nil {
+		return err
+	}
 	return a.db.UpdateTimeEntry(id, taskID, startTime, endTime, duration, note)
 }
 
@@ -193,6 +264,15 @@ func (a *App) SavePomodoroSettings(settings PomodoroSettings) error {
 
 // SaveStopwatchEntry creates a time entry from a completed stopwatch session.
 func (a *App) SaveStopwatchEntry(taskID int64, durationSeconds int64, note string) (int64, error) {
+	if taskID <= 0 {
+		return 0, errors.New("invalid task ID")
+	}
+	if durationSeconds < 0 {
+		return 0, errors.New("duration cannot be negative")
+	}
+	if len(note) > 500 {
+		return 0, errors.New("note is too long")
+	}
 	now := time.Now()
 	endTime := now.Format("2006-01-02T15:04:05")
 	startTime := now.Add(-time.Duration(durationSeconds) * time.Second).Format("2006-01-02T15:04:05")
@@ -218,14 +298,81 @@ func (a *App) SetWindowMinSize(width, height int) {
 
 // EnterMiniMode shrinks the window and sets it to always on top.
 func (a *App) EnterMiniMode() {
+	// store normal size
+	w, h := wailsRuntime.WindowGetSize(a.ctx)
+	if w >= 900 && h >= 600 {
+		a.normalWidth = w
+		a.normalHeight = h
+		a.db.SaveSetting("window_width", fmt.Sprintf("%d", w))
+		a.db.SaveSetting("window_height", fmt.Sprintf("%d", h))
+	}
+
+	a.isMiniMode = true
 	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, true)
 	wailsRuntime.WindowSetMinSize(a.ctx, 100, 50)
-	wailsRuntime.WindowSetSize(a.ctx, 320, 80)
+	
+	mw, mh := 320, 80
+	if a.miniWidth >= 100 && a.miniHeight >= 50 {
+		mw = a.miniWidth
+		mh = a.miniHeight
+	}
+	wailsRuntime.WindowSetSize(a.ctx, mw, mh)
 }
 
 // ExitMiniMode restores the window to normal size and unpins it.
 func (a *App) ExitMiniMode() {
+	// store mini size
+	w, h := wailsRuntime.WindowGetSize(a.ctx)
+	if w < 900 && h < 600 {
+		a.miniWidth = w
+		a.miniHeight = h
+		a.db.SaveSetting("window_mini_width", fmt.Sprintf("%d", w))
+		a.db.SaveSetting("window_mini_height", fmt.Sprintf("%d", h))
+	}
+
+	a.isMiniMode = false
 	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, false)
 	wailsRuntime.WindowSetMinSize(a.ctx, 900, 600)
-	wailsRuntime.WindowSetSize(a.ctx, 1100, 720)
+	if a.normalWidth >= 900 && a.normalHeight >= 600 {
+		wailsRuntime.WindowSetSize(a.ctx, a.normalWidth, a.normalHeight)
+	} else {
+		wailsRuntime.WindowSetSize(a.ctx, 1100, 720)
+	}
+}
+
+// validators
+
+var hexColorRegex = regexp.MustCompile(`^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$`)
+var dateTimeRegex = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$`)
+
+func (a *App) validateTask(name, color string) error {
+	if len(name) == 0 {
+		return errors.New("task name cannot be empty")
+	}
+	if len(name) > 100 {
+		return errors.New("task name is too long")
+	}
+	if !hexColorRegex.MatchString(color) {
+		return errors.New("invalid task color format")
+	}
+	return nil
+}
+
+func (a *App) validateTimeEntry(taskID int64, startTime, endTime string, duration int64, note string) error {
+	if taskID <= 0 {
+		return errors.New("invalid task ID")
+	}
+	if !dateTimeRegex.MatchString(startTime) {
+		return errors.New("invalid start time format")
+	}
+	if !dateTimeRegex.MatchString(endTime) {
+		return errors.New("invalid end time format")
+	}
+	if duration < 0 {
+		return errors.New("duration cannot be negative")
+	}
+	if len(note) > 500 {
+		return errors.New("note is too long")
+	}
+	return nil
 }

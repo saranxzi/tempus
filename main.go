@@ -29,6 +29,7 @@ func main() {
 			Assets: assets,
 		},
 		OnStartup:  app.startup,
+		OnDomReady: app.domReady,
 		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,

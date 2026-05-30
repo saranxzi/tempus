@@ -47,6 +47,16 @@ function fmtTime(seconds) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
+function esc(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function fmtDate(isoStr) {
   if (!isoStr) return '—';
   const d = new Date(isoStr);
@@ -344,8 +354,8 @@ async function renderPomodoro(container) {
               <div class="activity-item" style="cursor: default;">
                 <div class="activity-dot" style="background: ${e.taskColor}"></div>
                 <div class="activity-info">
-                  <div class="activity-name">${e.taskName}</div>
-                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} • ${e.note}</div>
+                  <div class="activity-name">${esc(e.taskName)}</div>
+                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} • ${esc(e.note)}</div>
                 </div>
                 <div class="activity-duration">${fmtDuration(e.duration)}</div>
               </div>
@@ -483,7 +493,7 @@ async function renderPomodoro(container) {
         pomoTaskId = id;
       }
     } catch(e) {
-      alert('Failed to add task: ' + e);
+      showAlertModal('Error', 'Failed to add task: ' + e);
     }
   });
 }
@@ -627,8 +637,8 @@ async function renderStopwatch(container) {
               <div class="activity-item" style="cursor: default;">
                 <div class="activity-dot" style="background: ${e.taskColor}"></div>
                 <div class="activity-info">
-                  <div class="activity-name">${e.taskName}</div>
-                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} - ${fmtTimeOnly(e.endTime)} ${e.note ? `• ${e.note}` : ''}</div>
+                  <div class="activity-name">${esc(e.taskName)}</div>
+                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} - ${fmtTimeOnly(e.endTime)} ${e.note ? `• ${esc(e.note)}` : ''}</div>
                 </div>
                 <div class="activity-duration">${fmtDuration(e.duration)}</div>
               </div>
@@ -725,7 +735,7 @@ async function renderStopwatch(container) {
         if (miniName) miniName.textContent = name;
       }
     } catch(e) {
-      alert('Failed to add task: ' + e);
+      showAlertModal('Error', 'Failed to add task: ' + e);
     }
   });
 }
@@ -799,8 +809,8 @@ async function stopAndSaveStopwatch() {
   clearInterval(swTimer);
   swRunning = false;
 
-  if (swSeconds < 1) { alert('Nothing to save — timer is at 0.'); return; }
-  if (!swTaskId) { alert('Please select a task first.'); return; }
+  if (swSeconds < 1) { showAlertModal('Validation Warning', 'Nothing to save — timer is at 0.'); return; }
+  if (!swTaskId) { showAlertModal('Validation Warning', 'Please select a task first.'); return; }
 
   try {
     await Go.SaveStopwatchEntry(swTaskId, swSeconds, 'Stopwatch session');
@@ -814,7 +824,7 @@ async function stopAndSaveStopwatch() {
     await hideMiniStopwatch();
     if (currentView === 'stopwatch') await renderStopwatch($('#main-content'));
   } catch (e) {
-    alert('Failed to save: ' + e);
+    showAlertModal('Error', 'Failed to save: ' + e);
   }
 }
 
@@ -949,12 +959,12 @@ async function reloadTimeEntries() {
     entries.forEach(entry => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><span class="flex items-center gap-sm"><span class="color-dot" style="background:${entry.taskColor}"></span>${entry.taskName}</span></td>
+        <td><span class="flex items-center gap-sm"><span class="color-dot" style="background:${entry.taskColor}"></span>${esc(entry.taskName)}</span></td>
         <td>${fmtDate(entry.startTime)}</td>
         <td>${fmtTimeOnly(entry.startTime)}</td>
         <td>${fmtTimeOnly(entry.endTime)}</td>
         <td><strong>${fmtDuration(entry.duration)}</strong></td>
-        <td style="color:var(--text-tertiary);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${entry.note || '—'}</td>
+        <td style="color:var(--text-tertiary);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${entry.note ? esc(entry.note) : '—'}</td>
         <td>
           <div class="flex gap-sm">
             <button class="btn btn-sm btn-ghost" data-edit="${entry.id}">✏️</button>
@@ -972,11 +982,12 @@ async function reloadTimeEntries() {
 }
 
 async function deleteEntry(id) {
-  if (!confirm('Delete this time entry?')) return;
-  try {
-    await Go.DeleteTimeEntry(id);
-    await reloadTimeEntries();
-  } catch (e) { alert('Failed: ' + e); }
+  showConfirmModal('Delete Entry', 'Are you sure you want to delete this time entry? This action cannot be undone.', async () => {
+    try {
+      await Go.DeleteTimeEntry(id);
+      await reloadTimeEntries();
+    } catch (e) { showAlertModal('Error', 'Failed to delete entry: ' + e); }
+  });
 }
 
 // ── Add/Edit Entry Modal ─────────────────────────────────────────────────
@@ -1085,7 +1096,7 @@ async function showEntryModal(entry) {
         await loadTasksDropdown('#modal-task', id);
       }
     } catch(e) {
-      alert('Failed to add task: ' + e);
+      showAlertModal('Error', 'Failed to add task: ' + e);
     }
   });
 
@@ -1117,10 +1128,10 @@ async function showEntryModal(entry) {
     const endTime = $('#modal-end')?.value?.replace('T', ' ') + ':00';
     const note = $('#modal-note')?.value || '';
 
-    if (!taskId) { alert('Please select a task.'); return; }
+    if (!taskId) { showAlertModal('Validation Warning', 'Please select a task.'); return; }
     const startD = new Date($('#modal-start')?.value);
     const endD = new Date($('#modal-end')?.value);
-    if (endD <= startD) { alert('End time must be after start time.'); return; }
+    if (endD <= startD) { showAlertModal('Validation Warning', 'End time must be after start time.'); return; }
     const duration = Math.floor((endD - startD) / 1000);
 
     try {
@@ -1131,7 +1142,7 @@ async function showEntryModal(entry) {
       }
       closeModal();
       await reloadTimeEntries();
-    } catch (e) { alert('Error: ' + e); }
+    } catch (e) { showAlertModal('Error', 'Failed to save entry: ' + e); }
   });
 }
 
@@ -1139,6 +1150,58 @@ function closeModal() {
   const root = $('#modal-root');
   if (root) root.innerHTML = '';
 }
+
+function showAlertModal(title, message) {
+  const root = $('#modal-root');
+  if (!root) return;
+  root.innerHTML = `
+    <div class="modal-overlay" id="alert-modal-overlay">
+      <div class="modal animate-in" style="max-width: 400px; text-align: center;">
+        <div class="modal-title" style="margin-bottom: var(--space-md); font-weight: 700;">${title}</div>
+        <p class="text-muted" style="margin-bottom: var(--space-lg); font-size: 13.5px; line-height: 1.6;">${message}</p>
+        <div class="modal-actions" style="justify-content: center; margin-top: var(--space-md);">
+          <button class="btn btn-primary" onclick="closeModal()">OK</button>
+        </div>
+      </div>
+    </div>
+  `;
+  $('#alert-modal-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'alert-modal-overlay') closeModal();
+  });
+}
+
+function showConfirmModal(title, message, onConfirm, onCancel = null) {
+  const root = $('#modal-root');
+  if (!root) return;
+  root.innerHTML = `
+    <div class="modal-overlay" id="confirm-modal-overlay">
+      <div class="modal animate-in" style="max-width: 400px; text-align: center;">
+        <div class="modal-title" style="margin-bottom: var(--space-md); color: var(--danger); font-weight: 700;">${title}</div>
+        <p class="text-muted" style="margin-bottom: var(--space-lg); font-size: 13.5px; line-height: 1.6;">${message}</p>
+        <div class="modal-actions" style="justify-content: center; gap: var(--space-md); margin-top: var(--space-md);">
+          <button class="btn btn-secondary" id="confirm-cancel-btn" style="min-width: 100px;">Cancel</button>
+          <button class="btn btn-danger" id="confirm-ok-btn" style="min-width: 100px;">Delete</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const close = () => {
+    closeModal();
+    if (onCancel) onCancel();
+  };
+
+  $('#confirm-cancel-btn')?.addEventListener('click', close);
+  $('#confirm-modal-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'confirm-modal-overlay') close();
+  });
+  
+  $('#confirm-ok-btn')?.addEventListener('click', () => {
+    closeModal();
+    onConfirm();
+  });
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // ANALYTICS VIEW
@@ -1404,11 +1467,12 @@ async function reloadTasks() {
 }
 
 async function deleteTask(id) {
-  if (!confirm('Delete this task and all its time entries?')) return;
-  try {
-    await Go.DeleteTask(id);
-    await reloadTasks();
-  } catch (e) { alert('Failed: ' + e); }
+  showConfirmModal('Delete Task', 'Are you sure you want to delete this task and all its associated time entries? This action cannot be undone.', async () => {
+    try {
+      await Go.DeleteTask(id);
+      await reloadTasks();
+    } catch (e) { showAlertModal('Error', 'Failed to delete task: ' + e); }
+  });
 }
 
 function showAddTaskModal() {
@@ -1468,7 +1532,7 @@ function showTaskModal(task) {
   // Save
   $('#modal-save-task')?.addEventListener('click', async () => {
     const name = $('#modal-task-name')?.value?.trim();
-    if (!name) { alert('Task name is required.'); return; }
+    if (!name) { showAlertModal('Validation Warning', 'Task name is required.'); return; }
     try {
       if (isEdit) {
         await Go.UpdateTask(task.id, name, currentColor);
@@ -1477,7 +1541,7 @@ function showTaskModal(task) {
       }
       closeModal();
       if (currentView === 'tasks') await reloadTasks();
-    } catch (e) { alert('Error: ' + e); }
+    } catch (e) { showAlertModal('Error', 'Failed to save task: ' + e); }
   });
 }
 
@@ -1511,7 +1575,7 @@ async function renderSettings(container) {
         Your data is stored locally in a SQLite database. No data leaves your machine.
       </p>
       <div class="flex gap-sm">
-        <button class="btn btn-secondary btn-sm" onclick="alert('Data is stored at: %APPDATA%/Tempus/tempus.db')">📁 Data Location</button>
+        <button class="btn btn-secondary btn-sm" onclick="showAlertModal('Data Location', 'Your database is stored locally at:<br><br><span style=\'user-select:text;font-family:monospace;background:var(--bg-elevated);padding:6px 12px;border-radius:6px;display:block;word-break:break-all;font-size:12px;\'>%APPDATA%\\\\Tempus\\\\tempus.db</span>')">📁 Data Location</button>
       </div>
     </div>
     <div class="card animate-in mt-lg" style="max-width:600px">
@@ -1562,5 +1626,7 @@ window.togglePin = togglePin;
 window.showAddEntryModal = showAddEntryModal;
 window.showAddTaskModal = showAddTaskModal;
 window.closeModal = closeModal;
+window.showAlertModal = showAlertModal;
+window.showConfirmModal = showConfirmModal;
 window.reloadTimeEntries = reloadTimeEntries;
 window.reloadAnalytics = reloadAnalytics;

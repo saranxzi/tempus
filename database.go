@@ -436,3 +436,20 @@ func (d *Database) SavePomodoroSettings(s PomodoroSettings) error {
 	}
 	return tx.Commit()
 }
+
+// get config
+func (d *Database) GetSetting(key string) (string, error) {
+	var val string
+	err := d.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
+}
+
+// save config
+func (d *Database) SaveSetting(key, value string) error {
+	_, err := d.db.Exec(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`, key, value)
+	return err
+}
+
