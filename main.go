@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"log"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -13,38 +14,28 @@ import (
 var assets embed.FS
 
 func main() {
-	app := NewApp()
+	db, err := NewDatabase()
+	if err != nil {
+		log.Fatal("Failed to initialize database: ", err)
+	}
+	app := NewApp(db)
 
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:            "Tempus — Time Tracker",
 		Width:            1100,
 		Height:           720,
 		MinWidth:         900,
 		MinHeight:        600,
-		DisableResize:    false,
 		Frameless:        true,
-		StartHidden:      false,
-		BackgroundColour: &options.RGBA{R: 15, G: 15, B: 20, A: 255},
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		OnStartup:  app.startup,
-		OnDomReady: app.domReady,
-		OnShutdown: app.shutdown,
-		Bind: []interface{}{
-			app,
-		},
-		Windows: &windows.Options{
-			WebviewIsTransparent:              true,
-			WindowIsTranslucent:               false,
-			DisableWindowIcon:                 false,
-			DisableFramelessWindowDecorations: false,
-			WebviewUserDataPath:               "",
-			Theme:                             windows.Dark,
-		},
+		BackgroundColour: &options.RGBA{R: 11, G: 11, B: 15, A: 255},
+		AssetServer:      &assetserver.Options{Assets: assets},
+		OnStartup:        app.startup,
+		OnDomReady:       app.domReady,
+		OnShutdown:       app.shutdown,
+		Bind:             []interface{}{app},
+		Windows:          &windows.Options{Theme: windows.Dark},
 	})
-
 	if err != nil {
-		println("Error:", err.Error())
+		log.Fatal(err)
 	}
 }
