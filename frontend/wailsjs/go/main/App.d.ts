@@ -4,7 +4,7 @@ import {main} from '../models';
 
 export function AddTask(arg1:string,arg2:string):Promise<number>;
 
-export function AddTimeEntry(arg1:number,arg2:string,arg3:string,arg4:number,arg5:string):Promise<number>;
+export function AddTimeEntry(arg1:number,arg2:string,arg3:string,arg4:string):Promise<number>;
 
 export function DeleteTask(arg1:number):Promise<void>;
 
@@ -28,12 +28,8 @@ export function SavePomodoroSettings(arg1:main.PomodoroSettings):Promise<void>;
 
 export function SaveStopwatchEntry(arg1:number,arg2:number,arg3:string):Promise<number>;
 
-export function SetWindowMinSize(arg1:number,arg2:number):Promise<void>;
-
-export function SetWindowSize(arg1:number,arg2:number):Promise<void>;
-
 export function ToggleAlwaysOnTop(arg1:boolean):Promise<void>;
 
 export function UpdateTask(arg1:number,arg2:string,arg3:string):Promise<void>;
 
-export function UpdateTimeEntry(arg1:number,arg2:number,arg3:string,arg4:string,arg5:number,arg6:string):Promise<void>;
+export function UpdateTimeEntry(arg1:number,arg2:number,arg3:string,arg4:string,arg5:string):Promise<void>;

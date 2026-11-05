@@ -6,8 +6,8 @@ export function AddTask(arg1, arg2) {
   return window['go']['main']['App']['AddTask'](arg1, arg2);
 }
 
-export function AddTimeEntry(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['AddTimeEntry'](arg1, arg2, arg3, arg4, arg5);
+export function AddTimeEntry(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AddTimeEntry'](arg1, arg2, arg3, arg4);
 }
 
 export function DeleteTask(arg1) {
@@ -54,14 +54,6 @@ export function SaveStopwatchEntry(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveStopwatchEntry'](arg1, arg2, arg3);
 }
 
-export function SetWindowMinSize(arg1, arg2) {
-  return window['go']['main']['App']['SetWindowMinSize'](arg1, arg2);
-}
-
-export function SetWindowSize(arg1, arg2) {
-  return window['go']['main']['App']['SetWindowSize'](arg1, arg2);
-}
-
 export function ToggleAlwaysOnTop(arg1) {
   return window['go']['main']['App']['ToggleAlwaysOnTop'](arg1);
 }
@@ -70,6 +62,6 @@ export function UpdateTask(arg1, arg2, arg3) {
   return window['go']['main']['App']['UpdateTask'](arg1, arg2, arg3);
 }
 
-export function UpdateTimeEntry(arg1, arg2, arg3, arg4, arg5, arg6) {
-  return window['go']['main']['App']['UpdateTimeEntry'](arg1, arg2, arg3, arg4, arg5, arg6);
+export function UpdateTimeEntry(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateTimeEntry'](arg1, arg2, arg3, arg4, arg5);
 }
