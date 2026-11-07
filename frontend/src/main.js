@@ -8,72 +8,66 @@ const Go = window.go?.main?.App || {};
 
 // ── State ────────────────────────────────────────────────────────────────
 let currentView = 'dashboard';
+let redrawChart = null;
 
 // Pomodoro state
+const PHASES = {
+  'focus':       { label: 'Focus',       setting: 'focusDuration' },
+  'short-break': { label: 'Short Break', setting: 'shortBreakDuration' },
+  'long-break':  { label: 'Long Break',  setting: 'longBreakDuration' },
+};
+const POMO_FIELDS = [
+  ['focusDuration', 'Focus (min)', 120],
+  ['shortBreakDuration', 'Short Break (min)', 30],
+  ['longBreakDuration', 'Long Break (min)', 60],
+  ['longBreakInterval', 'Long Break Every', 10],
+];
+const RING = 2 * Math.PI * 115;
+let pomoSettings = { focusDuration: 25, shortBreakDuration: 5, longBreakDuration: 15, longBreakInterval: 4 };
 let pomoTimer = null;
 let pomoRunning = false;
-let pomoSeconds = 25 * 60;
+let pomoPhase = 'focus';
 let pomoTotalSeconds = 25 * 60;
-let pomoPhase = 'focus'; // 'focus' | 'short-break' | 'long-break'
+let pomoSeconds = pomoTotalSeconds;
+let pomoEndsAt = 0; // wall-clock ms when the running phase ends
 let pomoSessionCount = 0;
-let pomoSettings = { focusDuration: 25, shortBreakDuration: 5, longBreakDuration: 15, longBreakInterval: 4 };
 let pomoSettingsOpen = false;
 let pomoTaskId = null;
 
-// Stopwatch state
+// Stopwatch state. Elapsed time is read from the wall clock, so timers that the
+// webview throttles while minimized never lose seconds.
 let swTimer = null;
 let swRunning = false;
-let swSeconds = 0;
+let swBaseMs = 0; // elapsed before the current run
+let swSince = 0;  // wall-clock ms when the current run started
 let swTaskId = null;
 let swTaskName = '';
+let swMini = false;
 let swPinned = false;
-let swMiniVisible = false;
 
 // ── Utility helpers ──────────────────────────────────────────────────────
+
+const $ = sel => document.querySelector(sel);
+const $$ = sel => document.querySelectorAll(sel);
+const pad = n => String(n).padStart(2, '0');
+const ymd = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const localDateTime = d => `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return d; };
+const esc = str => String(str ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 function fmtDuration(seconds) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2,'0')}m`;
-  if (m > 0) return `${m}m ${String(s).padStart(2,'0')}s`;
+  if (h > 0) return `${h}h ${pad(m)}m`;
+  if (m > 0) return `${m}m ${pad(s)}s`;
   return `${s}s`;
 }
 
-function fmtTime(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-}
-
-function esc(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-function fmtDate(isoStr) {
-  if (!isoStr) return '—';
-  const d = new Date(isoStr);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function fmtDateTime(isoStr) {
-  if (!isoStr) return '—';
-  const d = new Date(isoStr);
-  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
-function fmtTimeOnly(isoStr) {
-  if (!isoStr) return '—';
-  const d = new Date(isoStr);
-  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-}
+const fmtTime = seconds => `${pad(Math.floor(seconds / 3600))}:${pad(Math.floor(seconds % 3600 / 60))}:${pad(seconds % 60)}`;
+const fmtDate = s => s ? new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+const fmtDateTime = s => s ? new Date(s).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+const fmtTimeOnly = s => s ? new Date(s).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '—';
 
 const COLORS = [
   '#6366f1','#8b5cf6','#a855f7','#d946ef','#ec4899',
@@ -82,72 +76,71 @@ const COLORS = [
   '#64748b','#f59e0b','#10b981',
 ];
 
-function $(sel) { return document.querySelector(sel); }
-function $$(sel) { return document.querySelectorAll(sel); }
-function el(tag, attrs = {}, children = []) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === 'className') e.className = v;
-    else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
-    else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (k === 'innerHTML') e.innerHTML = v;
-    else if (k === 'textContent') e.textContent = v;
-    else e.setAttribute(k, v);
-  }
-  for (const c of children) {
-    if (typeof c === 'string') e.appendChild(document.createTextNode(c));
-    else if (c) e.appendChild(c);
-  }
-  return e;
+// ── Shared markup ────────────────────────────────────────────────────────
+
+const emptyState = (icon, text) => `<div class="empty-state"><div class="empty-icon">${icon}</div><p>${text}</p></div>`;
+
+const statCard = (icon, value, label, tone = 'accent') => `
+  <div class="stat-card" style="--stat-accent:var(--${tone});--stat-bg:var(--${tone}-dim)">
+    <div class="stat-icon">${icon}</div>
+    <div class="stat-value">${value}</div>
+    <div class="stat-label">${label}</div>
+  </div>`;
+
+const activityHTML = (e, meta) => `
+  <div class="activity-item">
+    <span class="activity-dot" style="background:${e.taskColor}"></span>
+    <div class="activity-info">
+      <div class="activity-name">${esc(e.taskName)}</div>
+      <div class="activity-meta">${meta}</div>
+    </div>
+    <div class="activity-duration">${fmtDuration(e.duration)}</div>
+  </div>`;
+
+const dateRangeHTML = (prefix, days, onchange) => `
+  <div class="date-range">
+    <div class="form-group">
+      <label class="form-label">From</label>
+      <input type="date" class="form-input" id="${prefix}-start" value="${ymd(daysAgo(days))}" onchange="${onchange}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">To</label>
+      <input type="date" class="form-input" id="${prefix}-end" value="${ymd()}" onchange="${onchange}">
+    </div>
+  </div>`;
+
+// Routes clicks on [data-edit] / [data-del] buttons to the item at that index.
+function bindItemActions(container, items, onEdit, onDelete) {
+  container.onclick = e => {
+    const btn = e.target.closest('[data-edit], [data-del]');
+    if (btn) btn.dataset.edit ? onEdit(items[btn.dataset.edit]) : onDelete(items[btn.dataset.del].id);
+  };
 }
 
-// ── Title-bar window controls ────────────────────────────────────────────
+// ── App shell ────────────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
-  $('#btn-minimize')?.addEventListener('click', () => window.runtime?.WindowMinimise());
-  $('#btn-maximize')?.addEventListener('click', () => window.runtime?.WindowToggleMaximise());
-  $('#btn-close')?.addEventListener('click', () => window.runtime?.Quit());
-
-  // Navigation
-  $$('.nav-item').forEach(item => {
-    item.addEventListener('click', () => {
-      const view = item.dataset.view;
-      if (view) navigateTo(view);
-    });
-  });
-
-  // Mini stopwatch controls
-  $('#mini-pause')?.addEventListener('click', toggleStopwatch);
-  $('#mini-stop')?.addEventListener('click', stopAndSaveStopwatch);
-  $('#mini-pin')?.addEventListener('click', togglePin);
-
-  // Load pomodoro settings then render
+  $('#btn-minimize').addEventListener('click', () => window.runtime?.WindowMinimise());
+  $('#btn-maximize').addEventListener('click', () => window.runtime?.WindowToggleMaximise());
+  $('#btn-close').addEventListener('click', () => window.runtime?.Quit());
+  $$('.nav-item').forEach(item => item.addEventListener('click', () => navigateTo(item.dataset.view)));
+  $('#mini-pause').addEventListener('click', toggleStopwatch);
+  $('#mini-stop').addEventListener('click', stopAndSaveStopwatch);
+  $('#mini-pin').addEventListener('click', togglePin);
+  $('#mini-expand').addEventListener('click', () => setMiniMode(false));
   loadPomoSettings().then(() => navigateTo('dashboard'));
 });
 
+window.addEventListener('resize', () => redrawChart?.());
+
+// Each view writes its markup synchronously, then fills data into its own
+// element ids, so a slow request can never overwrite a newer view.
 function navigateTo(view) {
   currentView = view;
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === view));
-  renderView(view);
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// VIEW ROUTER
-// ══════════════════════════════════════════════════════════════════════════
-
-async function renderView(view) {
   const main = $('#main-content');
-  main.innerHTML = '';
   main.scrollTop = 0;
-
-  switch (view) {
-    case 'dashboard':    await renderDashboard(main); break;
-    case 'pomodoro':     await renderPomodoro(main); break;
-    case 'stopwatch':    await renderStopwatch(main); break;
-    case 'time-tracking': await renderTimeTracking(main); break;
-    case 'analytics':    await renderAnalytics(main); break;
-    case 'tasks':        await renderTasks(main); break;
-    case 'settings':     await renderSettings(main); break;
-  }
+  VIEWS[view][1](main);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -161,168 +154,194 @@ async function renderDashboard(container) {
       <p>Your time tracking overview at a glance</p>
     </div>
     <div class="stats-grid stagger" id="dash-stats"></div>
-    <div class="grid-2 stagger" style="animation-delay:200ms">
-      <div class="card" id="dash-chart-card">
-        <div class="card-header">
-          <span class="card-title">This Week</span>
-        </div>
+    <div class="grid-2 stagger">
+      <div class="card">
+        <div class="card-header"><span class="card-title">This Week</span></div>
         <div class="chart-container"><canvas id="dash-bar-chart"></canvas></div>
       </div>
-      <div class="card" id="dash-recent-card">
+      <div class="card">
         <div class="card-header">
           <span class="card-title">Recent Activity</span>
           <button class="btn btn-sm btn-ghost" onclick="navigateTo('time-tracking')">View all →</button>
         </div>
-        <div id="dash-recent-list"></div>
+        <div id="dash-recent" class="clickable" onclick="navigateTo('time-tracking')"></div>
       </div>
-    </div>
-  `;
+    </div>`;
 
   try {
     const data = await Go.GetDashboardData();
-    // Stats
-    const statsEl = $('#dash-stats');
-    statsEl.innerHTML = `
-      <div class="stat-card" style="--stat-accent:var(--accent);--stat-bg:var(--accent-dim)">
-        <div class="stat-icon">⏱</div>
-        <div class="stat-value">${fmtDuration(data.todaySeconds || 0)}</div>
-        <div class="stat-label">Today</div>
-      </div>
-      <div class="stat-card" style="--stat-accent:var(--info);--stat-bg:var(--info-dim)">
-        <div class="stat-icon">📅</div>
-        <div class="stat-value">${fmtDuration(data.weekSeconds || 0)}</div>
-        <div class="stat-label">This Week</div>
-      </div>
-      <div class="stat-card" style="--stat-accent:var(--success);--stat-bg:var(--success-dim)">
-        <div class="stat-icon">📊</div>
-        <div class="stat-value">${fmtDuration(data.totalSeconds || 0)}</div>
-        <div class="stat-label">All Time</div>
-      </div>
-      <div class="stat-card" style="--stat-accent:var(--warning);--stat-bg:var(--warning-dim)">
-        <div class="stat-icon">🗂️</div>
-        <div class="stat-value">${data.taskCount || 0}</div>
-        <div class="stat-label">Active Tasks</div>
-      </div>
-    `;
-
-    // Bar chart
-    drawWeekBarChart($('#dash-bar-chart'), data.weekDaySummary || []);
-
-    // Recent activity
-    const recentEl = $('#dash-recent-list');
-    if (!data.recentEntries || data.recentEntries.length === 0) {
-      recentEl.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p>No activity yet. Start tracking!</p></div>`;
-    } else {
-      data.recentEntries.slice(0, 6).forEach(entry => {
-        const item = el('div', { className: 'activity-item', onClick: () => navigateTo('time-tracking') }, [
-          el('div', { className: 'activity-dot', style: { background: entry.taskColor } }),
-          el('div', { className: 'activity-info' }, [
-            el('div', { className: 'activity-name', textContent: entry.taskName }),
-            el('div', { className: 'activity-meta', textContent: fmtDateTime(entry.startTime) }),
-          ]),
-          el('div', { className: 'activity-duration', textContent: fmtDuration(entry.duration) }),
-        ]);
-        recentEl.appendChild(item);
-      });
-    }
+    const stats = $('#dash-stats');
+    if (!stats) return;
+    stats.innerHTML =
+      statCard('⏱', fmtDuration(data.todaySeconds), 'Today') +
+      statCard('📅', fmtDuration(data.weekSeconds), 'This Week', 'info') +
+      statCard('📊', fmtDuration(data.totalSeconds), 'All Time', 'success') +
+      statCard('🗂️', data.taskCount, 'Tasks', 'warning');
+    drawWeekBarChart($('#dash-bar-chart'), data.weekDaySummary);
+    $('#dash-recent').innerHTML = data.recentEntries.length
+      ? data.recentEntries.map(e => activityHTML(e, fmtDateTime(e.startTime))).join('')
+      : emptyState('📭', 'No activity yet. Start tracking!');
   } catch (err) {
-    container.innerHTML += `<div class="card"><p class="text-danger">Failed to load dashboard: ${err}</p></div>`;
+    $('#dash-stats')?.insertAdjacentHTML('afterend', `<div class="card text-danger mb-lg">Failed to load dashboard: ${esc(err)}</div>`);
   }
 }
 
-// ── Simple bar chart (Canvas) ────────────────────────────────────────────
+// ── Canvas charts ────────────────────────────────────────────────────────
 
-function drawWeekBarChart(canvas, daySummary) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.parentElement.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width;
-  const H = rect.height;
+// Sizes the canvas to its container at device resolution, then calls
+// draw(ctx, width, height, cssVar). Re-runs on window resize.
+function drawChart(canvas, draw) {
+  redrawChart = () => {
+    if (!canvas.isConnected) return;
+    const { width, height } = canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    const ctx = canvas.getContext('2d');
+    const css = getComputedStyle(document.body);
+    ctx.scale(dpr, dpr);
+    ctx.font = `10px ${css.fontFamily}`;
+    draw(ctx, width, height, name => css.getPropertyValue(name).trim());
+  };
+  redrawChart();
+}
 
-  const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const now = new Date();
-  const weekday = now.getDay() === 0 ? 7 : now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (weekday - 1));
-
-  // Build per-day totals
-  const values = new Array(7).fill(0);
-  for (const s of daySummary) {
-    const d = new Date(s.date + 'T00:00:00');
-    const idx = (d.getDay() === 0 ? 6 : d.getDay() - 1);
-    values[idx] = s.totalSeconds / 3600; // hours
-  }
-  const maxVal = Math.max(...values, 1);
-
-  const barW = (W - 60) / 7;
-  const padX = 40;
-  const padY = 20;
-  const chartH = H - padY * 2;
-
-  // Draw grid lines
-  ctx.strokeStyle = 'hsla(230, 30%, 40%, 0.15)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = padY + (chartH / 4) * i;
-    ctx.beginPath();
-    ctx.moveTo(padX, y);
-    ctx.lineTo(W, y);
-    ctx.stroke();
-  }
-
-  // Draw bars
-  const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6366f1';
-  for (let i = 0; i < 7; i++) {
-    const x = padX + i * barW + barW * 0.15;
-    const bw = barW * 0.7;
-    const bh = (values[i] / maxVal) * chartH;
-    const y = padY + chartH - bh;
-
-    // Bar
-    ctx.fillStyle = i === weekday - 1 ? accentColor : 'hsla(245, 80%, 65%, 0.35)';
-    roundRect(ctx, x, y, bw, bh, 4);
-    ctx.fill();
-
-    // Label
-    ctx.fillStyle = 'hsl(220, 12%, 45%)';
-    ctx.font = '11px Inter, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(dayLabels[i], x + bw / 2, H - 4);
-
-    // Value
-    if (values[i] > 0) {
-      ctx.fillStyle = 'hsl(220, 20%, 93%)';
-      ctx.font = '10px Inter, sans-serif';
-      ctx.fillText(values[i].toFixed(1) + 'h', x + bw / 2, y - 6);
-    }
-  }
-
-  // Y-axis labels
-  ctx.fillStyle = 'hsl(220, 12%, 45%)';
-  ctx.font = '10px Inter, sans-serif';
+// Draws the hour grid with y-axis labels and returns the plot area.
+function drawGrid(ctx, W, H, max, color) {
+  const x0 = 40, y0 = 20, pw = W - x0 - 10, ph = H - 2 * y0;
   ctx.textAlign = 'right';
   for (let i = 0; i <= 4; i++) {
-    const y = padY + (chartH / 4) * i;
-    const v = ((4 - i) / 4 * maxVal).toFixed(1);
-    ctx.fillText(v + 'h', padX - 6, y + 3);
+    const y = y0 + ph * i / 4;
+    ctx.fillStyle = color('--border-subtle');
+    ctx.fillRect(x0, y, pw, 1);
+    ctx.fillStyle = color('--text-tertiary');
+    ctx.fillText(`${(max * (4 - i) / 4).toFixed(1)}h`, x0 - 6, y + 3);
   }
+  ctx.textAlign = 'center';
+  return { x0, y0, pw, ph };
 }
 
-function roundRect(ctx, x, y, w, h, r) {
-  if (h <= 0) return;
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h);
-  ctx.lineTo(x, y + h);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
+function drawWeekBarChart(canvas, daySummary) {
+  const weekday = d => (d.getDay() + 6) % 7; // Monday = 0
+  const values = Array(7).fill(0);
+  daySummary.forEach(s => { values[weekday(new Date(`${s.date}T00:00:00`))] = s.totalSeconds / 3600; });
+  const max = Math.max(...values, 1), today = weekday(new Date());
+
+  drawChart(canvas, (ctx, W, H, color) => {
+    const { x0, y0, pw, ph } = drawGrid(ctx, W, H, max, color);
+    const slot = pw / 7;
+    ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach((day, i) => {
+      const cx = x0 + slot * (i + 0.5), bh = values[i] / max * ph, top = y0 + ph - bh;
+      ctx.fillStyle = color('--accent');
+      ctx.globalAlpha = i === today ? 1 : 0.4;
+      ctx.beginPath();
+      ctx.roundRect(cx - slot * 0.35, top, slot * 0.7, bh, [4, 4, 0, 0]);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = color('--text-tertiary');
+      ctx.fillText(day, cx, H - 4);
+      if (values[i] > 0) {
+        ctx.fillStyle = color('--text-primary');
+        ctx.fillText(`${values[i].toFixed(1)}h`, cx, top - 6);
+      }
+    });
+  });
+}
+
+function drawDailyChart(canvas, days) {
+  const values = days.map(d => d.totalSeconds / 3600), max = Math.max(...values, 1);
+
+  drawChart(canvas, (ctx, W, H, color) => {
+    if (!values.some(v => v > 0)) {
+      ctx.fillStyle = color('--text-tertiary');
+      ctx.textAlign = 'center';
+      return ctx.fillText('No data available', W / 2, H / 2);
+    }
+    const { x0, y0, pw, ph } = drawGrid(ctx, W, H, max, color);
+    const pts = values.map((v, i) => [x0 + pw * i / Math.max(values.length - 1, 1), y0 + ph - v / max * ph]);
+
+    ctx.fillStyle = ctx.strokeStyle = color('--accent');
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    pts.forEach(([x, y]) => ctx.lineTo(x, y));
+    ctx.stroke();
+    ctx.lineTo(pts.at(-1)[0], y0 + ph);
+    ctx.lineTo(x0, y0 + ph);
+    ctx.globalAlpha = 0.12;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    if (pts.length <= 31) pts.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.fill(); });
+
+    ctx.fillStyle = color('--text-tertiary');
+    new Set([0, pts.length >> 1, pts.length - 1]).forEach(i => {
+      const label = new Date(`${days[i].date}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      ctx.textAlign = i === 0 ? 'left' : i === pts.length - 1 ? 'right' : 'center';
+      ctx.fillText(label, pts[i][0], H - 4);
+    });
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// TASK PICKER (shared by Stopwatch, Pomodoro and the entry modal)
+// ══════════════════════════════════════════════════════════════════════════
+
+const taskPickerHTML = id => `
+  <div class="flex gap-sm">
+    <select class="form-select" id="${id}"></select>
+    <button class="btn btn-secondary" id="${id}-new" data-tooltip="New task">+</button>
+  </div>
+  <div class="quick-add hidden" id="${id}-add">
+    <input type="text" class="form-input" placeholder="New task name…" maxlength="100">
+    <button class="btn btn-primary btn-sm">Save</button>
+    <button class="btn btn-secondary btn-sm">✕</button>
+  </div>`;
+
+// Fills the task <select> and wires its inline "new task" form.
+// onChange(id, name) fires whenever the selection is (re)established.
+async function initTaskPicker(id, placeholder, selectedId, onChange = () => {}) {
+  const select = $(`#${id}`), box = $(`#${id}-add`), input = box.querySelector('input');
+  const [saveBtn, cancelBtn] = box.querySelectorAll('button');
+  let tasks = [];
+
+  const emit = () => onChange(+select.value || null, tasks.find(t => t.id === +select.value)?.name || '');
+  const fill = async selected => {
+    tasks = await Go.GetTasks();
+    select.innerHTML = (placeholder ? `<option value="">${placeholder}</option>` : '') +
+      tasks.map(t => `<option value="${t.id}" ${t.id === selected ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
+    emit();
+  };
+  const hideBox = () => { box.classList.add('hidden'); input.value = ''; };
+  const save = async () => {
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+      const newId = await Go.AddTask(name, COLORS[Math.floor(Math.random() * COLORS.length)]);
+      hideBox();
+      await fill(newId);
+    } catch (e) { showAlertModal('Error', `Failed to add task: ${e}`); }
+  };
+
+  select.addEventListener('change', emit);
+  $(`#${id}-new`).addEventListener('click', () => { box.classList.remove('hidden'); input.focus(); });
+  cancelBtn.addEventListener('click', hideBox);
+  saveBtn.addEventListener('click', save);
+  input.addEventListener('keydown', e => e.key === 'Enter' && save());
+  try { await fill(selectedId); } catch (e) { console.error(e); }
+}
+
+// Lists today's sessions whose note contains the given label.
+async function loadTodaySessions(kind) {
+  const label = kind === 'pomodoro' ? 'Pomodoro' : 'Stopwatch';
+  try {
+    const entries = (await Go.GetTimeEntries(`${ymd()}T00:00:00`, `${ymd()}T23:59:59`)).filter(e => e.note.includes(label));
+    const box = $(`#${kind}-sessions`);
+    if (!box) return;
+    box.innerHTML = entries.length
+      ? `<div class="card-header"><span class="card-title">Today's ${label} Sessions</span></div>
+         <div class="scroll-list">${entries.map(e => activityHTML(e, `${fmtTimeOnly(e.startTime)} – ${fmtTimeOnly(e.endTime)}`)).join('')}</div>`
+      : `<p class="text-muted text-center">No ${label.toLowerCase()} sessions logged today yet.</p>`;
+  } catch (e) { console.error(e); }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -330,290 +349,127 @@ function roundRect(ctx, x, y, w, h, r) {
 // ══════════════════════════════════════════════════════════════════════════
 
 async function renderPomodoro(container) {
-  const circumference = 2 * Math.PI * 115;
-  const progress = pomoTotalSeconds > 0 ? (1 - pomoSeconds / pomoTotalSeconds) : 0;
-  const dashOffset = circumference * (1 - progress);
-
-  const isBreak = pomoPhase !== 'focus';
-  const breakClass = isBreak ? ' break-mode' : '';
-
-  // Fetch today's Pomodoro entries
-  let todayPomosHTML = '';
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const entries = await Go.GetTimeEntries(today + 'T00:00:00', today + 'T23:59:59');
-    const pomoEntries = entries.filter(e => e.note && e.note.includes('Pomodoro'));
-    if (pomoEntries && pomoEntries.length > 0) {
-      todayPomosHTML = `
-        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0">
-          <div class="card-header">
-            <span class="card-title">Today's Focus Sessions</span>
-          </div>
-          <div style="max-height: 200px; overflow-y: auto;">
-            ${pomoEntries.map(e => `
-              <div class="activity-item" style="cursor: default;">
-                <div class="activity-dot" style="background: ${e.taskColor}"></div>
-                <div class="activity-info">
-                  <div class="activity-name">${esc(e.taskName)}</div>
-                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} • ${esc(e.note)}</div>
-                </div>
-                <div class="activity-duration">${fmtDuration(e.duration)}</div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      `;
-    } else {
-      todayPomosHTML = `
-        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0;text-align:center">
-          <div class="text-muted" style="font-size:12px;padding:var(--space-md)">No Pomodoro sessions logged today yet.</div>
-        </div>
-      `;
-    }
-  } catch(e) {
-    console.error(e);
-  }
-
   container.innerHTML = `
     <div class="view-header animate-in">
       <h1>Pomodoro Timer</h1>
       <p>Focus deeply, then take restorative breaks</p>
     </div>
-    <div class="card animate-in" style="max-width:500px;margin:0 auto">
-      <div class="form-group" style="max-width:300px;margin:0 auto var(--space-md)">
+    <div class="card narrow animate-in">
+      <div class="form-group task-picker">
         <label class="form-label">Associate Task</label>
-        <div class="flex gap-sm">
-          <select class="form-select" id="pomo-task-select" style="flex:1">
-            <option value="">Choose a task (optional)…</option>
-          </select>
-          <button class="btn btn-secondary" id="pomo-new-task-btn" style="padding:0 12px" data-tooltip="New Task">+</button>
-        </div>
-        <div id="pomo-quick-add-container" class="hidden" style="margin-top:var(--space-xs);display:flex;gap:var(--space-xs)">
-          <input type="text" id="pomo-quick-add-input" class="form-input" placeholder="New task name..." style="flex:1;padding:6px 10px;font-size:12px">
-          <button class="btn btn-primary btn-sm" id="pomo-quick-add-save">Save</button>
-          <button class="btn btn-secondary btn-sm" id="pomo-quick-add-cancel">✕</button>
-        </div>
+        ${taskPickerHTML('pomo-task')}
       </div>
-      
       <div class="timer-display">
-        <div class="timer-phase${breakClass}" id="pomo-phase">${phaseLabel()}</div>
+        <div class="timer-phase" id="pomo-phase"></div>
         <div class="timer-ring-container">
           <svg class="timer-ring" viewBox="0 0 240 240">
             <circle class="timer-ring-bg" cx="120" cy="120" r="115"/>
-            <circle class="timer-ring-progress${breakClass}" cx="120" cy="120" r="115"
-              stroke-dasharray="${circumference}"
-              stroke-dashoffset="${dashOffset}"
-              id="pomo-ring"/>
+            <circle class="timer-ring-progress" id="pomo-ring" cx="120" cy="120" r="115"
+              stroke-dasharray="${RING}" stroke-dashoffset="${RING * pomoSeconds / pomoTotalSeconds}"/>
           </svg>
-          <div class="timer-time" id="pomo-time">${fmtTime(pomoSeconds)}</div>
+          <div class="timer-time" id="pomo-time"></div>
         </div>
         <div class="timer-controls">
           <button class="timer-btn" onclick="resetPomodoro()" data-tooltip="Reset">↺</button>
-          <button class="timer-btn primary" onclick="togglePomodoro()" id="pomo-play-btn">
-            ${pomoRunning ? '⏸' : '▶'}
-          </button>
+          <button class="timer-btn primary" onclick="togglePomodoro()" id="pomo-play-btn"></button>
           <button class="timer-btn" onclick="skipPomodoro()" data-tooltip="Skip">⏭</button>
         </div>
-        <div style="margin-top:var(--space-md);display:flex;align-items:center;justify-content:center;gap:var(--space-sm)">
-          <span class="badge badge-accent">Session ${pomoSessionCount + 1}</span>
-          <span class="badge ${isBreak ? 'badge-success' : 'badge-accent'}">${pomoPhase.replace('-', ' ')}</span>
-        </div>
+        <div class="mt-md"><span class="badge badge-accent" id="pomo-session"></span></div>
       </div>
-
-      <!-- Settings dropdown -->
-      <div class="pomo-settings-dropdown">
-        <div class="pomo-settings-toggle ${pomoSettingsOpen ? 'open' : ''}" onclick="togglePomoSettings()">
-          ⚙️ Timer Settings <span class="chevron">▼</span>
+      <details class="pomo-settings" ${pomoSettingsOpen ? 'open' : ''} ontoggle="pomoSettingsOpen = this.open">
+        <summary>⚙️ Timer Settings</summary>
+        <div class="pomo-settings-body">
+          ${POMO_FIELDS.map(([key, label, max]) => `
+            <div class="form-group">
+              <label class="form-label">${label}</label>
+              <input type="number" class="form-input" min="1" max="${max}" value="${pomoSettings[key]}" onchange="updatePomoSetting('${key}', this)">
+            </div>`).join('')}
         </div>
-        <div id="pomo-settings-body" class="${pomoSettingsOpen ? '' : 'hidden'}">
-          <div class="pomo-settings-body">
-            <div class="form-group">
-              <label class="form-label">Focus (min)</label>
-              <input type="number" class="form-input" id="pomo-focus" value="${pomoSettings.focusDuration}" min="1" max="120" onchange="updatePomoSetting('focusDuration', this.value)">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Short Break</label>
-              <input type="number" class="form-input" id="pomo-short" value="${pomoSettings.shortBreakDuration}" min="1" max="30" onchange="updatePomoSetting('shortBreakDuration', this.value)">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Long Break</label>
-              <input type="number" class="form-input" id="pomo-long" value="${pomoSettings.longBreakDuration}" min="1" max="60" onchange="updatePomoSetting('longBreakDuration', this.value)">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Long Break After</label>
-              <input type="number" class="form-input" id="pomo-interval" value="${pomoSettings.longBreakInterval}" min="1" max="10" onchange="updatePomoSetting('longBreakInterval', this.value)">
-            </div>
-          </div>
-        </div>
-      </div>
+      </details>
     </div>
-    ${todayPomosHTML}
-  `;
+    <div class="card narrow mt-lg animate-in" id="pomodoro-sessions"></div>`;
 
-  // Populate tasks dropdown
-  await loadTasksDropdown('#pomo-task-select', pomoTaskId);
-
-  // Set selected task on change
-  const pomoSelect = $('#pomo-task-select');
-  pomoSelect?.addEventListener('change', () => {
-    pomoTaskId = parseInt(pomoSelect.value) || null;
-  });
-
-  // Hook up quick task add
-  const pNewBtn = $('#pomo-new-task-btn');
-  const pContainerDiv = $('#pomo-quick-add-container');
-  const pInput = $('#pomo-quick-add-input');
-  const pSaveBtn = $('#pomo-quick-add-save');
-  const pCancelBtn = $('#pomo-quick-add-cancel');
-
-  pNewBtn?.addEventListener('click', () => {
-    pContainerDiv?.classList.remove('hidden');
-    pInput?.focus();
-  });
-
-  pCancelBtn?.addEventListener('click', () => {
-    pContainerDiv?.classList.add('hidden');
-    if (pInput) pInput.value = '';
-  });
-
-  pSaveBtn?.addEventListener('click', async () => {
-    const name = pInput?.value?.trim();
-    if (!name) return;
-    try {
-      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
-      const id = await Go.AddTask(name, color);
-      pContainerDiv?.classList.add('hidden');
-      if (pInput) pInput.value = '';
-      
-      // Reload dropdown and select new task
-      const select = $('#pomo-task-select');
-      if (select) {
-        select.innerHTML = '<option value="">Choose a task (optional)…</option>';
-        await loadTasksDropdown('#pomo-task-select', id);
-        pomoTaskId = id;
-      }
-    } catch(e) {
-      showAlertModal('Error', 'Failed to add task: ' + e);
-    }
-  });
-}
-
-function phaseLabel() {
-  switch (pomoPhase) {
-    case 'focus': return 'FOCUS';
-    case 'short-break': return 'SHORT BREAK';
-    case 'long-break': return 'LONG BREAK';
-  }
+  updatePomoDisplay();
+  loadTodaySessions('pomodoro');
+  await initTaskPicker('pomo-task', 'Choose a task (optional)…', pomoTaskId, id => { pomoTaskId = id; });
 }
 
 async function loadPomoSettings() {
-  try {
-    const s = await Go.GetPomodoroSettings();
-    if (s) pomoSettings = s;
-    if (!pomoRunning) {
-      pomoTotalSeconds = pomoSettings.focusDuration * 60;
-      pomoSeconds = pomoTotalSeconds;
-    }
-  } catch (e) { console.error('Failed to load pomo settings', e); }
+  try { pomoSettings = await Go.GetPomodoroSettings(); } catch (e) { console.error('Failed to load pomo settings', e); }
+  setPomoPhase('focus');
 }
 
-function togglePomoSettings() {
-  pomoSettingsOpen = !pomoSettingsOpen;
-  const body = $('#pomo-settings-body');
-  const toggle = document.querySelector('.pomo-settings-toggle');
-  if (body) body.classList.toggle('hidden', !pomoSettingsOpen);
-  if (toggle) toggle.classList.toggle('open', pomoSettingsOpen);
+async function updatePomoSetting(key, input) {
+  const value = Math.min(+input.max, Math.max(1, parseInt(input.value) || pomoSettings[key]));
+  input.value = pomoSettings[key] = value;
+  try { await Go.SavePomodoroSettings(pomoSettings); } catch (e) { console.error(e); }
+  if (!pomoRunning && PHASES[pomoPhase].setting === key) setPomoPhase(pomoPhase);
 }
 
-async function updatePomoSetting(key, value) {
-  const v = parseInt(value);
-  if (isNaN(v) || v < 1) return;
-  pomoSettings[key] = v;
-  try {
-    await Go.SavePomodoroSettings(pomoSettings);
-  } catch (e) { console.error(e); }
-  if (!pomoRunning) {
-    if (pomoPhase === 'focus') { pomoTotalSeconds = pomoSettings.focusDuration * 60; }
-    else if (pomoPhase === 'short-break') { pomoTotalSeconds = pomoSettings.shortBreakDuration * 60; }
-    else { pomoTotalSeconds = pomoSettings.longBreakDuration * 60; }
-    pomoSeconds = pomoTotalSeconds;
-    updatePomoDisplay();
-  }
+function setPomoPhase(phase) {
+  pomoPhase = phase;
+  pomoTotalSeconds = pomoSeconds = pomoSettings[PHASES[phase].setting] * 60;
+  updatePomoDisplay();
 }
+
+const pomoRemaining = () => Math.max(0, Math.ceil((pomoEndsAt - Date.now()) / 1000));
 
 function togglePomodoro() {
+  clearInterval(pomoTimer);
+  pomoRunning = !pomoRunning;
   if (pomoRunning) {
-    clearInterval(pomoTimer);
-    pomoRunning = false;
-  } else {
-    pomoRunning = true;
-    pomoTimer = setInterval(tickPomodoro, 1000);
+    pomoEndsAt = Date.now() + pomoSeconds * 1000;
+    pomoTimer = setInterval(tickPomodoro, 250);
   }
   updatePomoDisplay();
-  const btn = $('#pomo-play-btn');
-  if (btn) btn.textContent = pomoRunning ? '⏸' : '▶';
 }
 
 function tickPomodoro() {
-  if (pomoSeconds > 0) {
-    pomoSeconds--;
-    updatePomoDisplay();
-  } else {
-    clearInterval(pomoTimer);
-    pomoRunning = false;
-    // Auto-advance phase
-    if (pomoPhase === 'focus') {
-      pomoSessionCount++;
-      if (pomoTaskId) {
-        const duration = pomoTotalSeconds;
-        Go.SaveStopwatchEntry(pomoTaskId, duration, 'Pomodoro focus session').then(() => {
-          if (currentView === 'pomodoro') renderPomodoro($('#main-content'));
-        }).catch(err => {
-          console.error("Failed to save Pomodoro time entry automatically:", err);
-        });
-      }
-      if (pomoSessionCount % pomoSettings.longBreakInterval === 0) {
-        pomoPhase = 'long-break';
-        pomoTotalSeconds = pomoSettings.longBreakDuration * 60;
-      } else {
-        pomoPhase = 'short-break';
-        pomoTotalSeconds = pomoSettings.shortBreakDuration * 60;
-      }
-    } else {
-      pomoPhase = 'focus';
-      pomoTotalSeconds = pomoSettings.focusDuration * 60;
-    }
-    pomoSeconds = pomoTotalSeconds;
-    if (currentView === 'pomodoro') renderPomodoro($('#main-content'));
-  }
+  pomoSeconds = pomoRemaining();
+  if (pomoSeconds === 0) finishPomoPhase(true);
+  else updatePomoDisplay();
 }
 
-function updatePomoDisplay() {
-  const timeEl = $('#pomo-time');
-  const ringEl = $('#pomo-ring');
-  if (timeEl) timeEl.textContent = fmtTime(pomoSeconds);
-  if (ringEl) {
-    const circumference = 2 * Math.PI * 115;
-    const progress = pomoTotalSeconds > 0 ? (1 - pomoSeconds / pomoTotalSeconds) : 0;
-    ringEl.setAttribute('stroke-dashoffset', circumference * (1 - progress));
+// Ends the current phase. A focus phase logs the time actually focused, so
+// skipping early never records a full session.
+function finishPomoPhase(completed) {
+  if (pomoRunning) pomoSeconds = pomoRemaining();
+  clearInterval(pomoTimer);
+  pomoRunning = false;
+  if (pomoPhase !== 'focus') return setPomoPhase('focus');
+
+  const focused = pomoTotalSeconds - pomoSeconds;
+  if (pomoTaskId && focused >= 60) {
+    Go.SaveStopwatchEntry(pomoTaskId, focused, 'Pomodoro focus session')
+      .then(() => loadTodaySessions('pomodoro'))
+      .catch(e => console.error('Failed to save Pomodoro session:', e));
   }
+  if (completed) pomoSessionCount++;
+  setPomoPhase(completed && pomoSessionCount % pomoSettings.longBreakInterval === 0 ? 'long-break' : 'short-break');
+}
+
+function skipPomodoro() {
+  finishPomoPhase(false);
 }
 
 function resetPomodoro() {
   clearInterval(pomoTimer);
   pomoRunning = false;
-  pomoPhase = 'focus';
-  pomoTotalSeconds = pomoSettings.focusDuration * 60;
-  pomoSeconds = pomoTotalSeconds;
   pomoSessionCount = 0;
-  if (currentView === 'pomodoro') renderPomodoro($('#main-content'));
+  setPomoPhase('focus');
 }
 
-function skipPomodoro() {
-  clearInterval(pomoTimer);
-  pomoRunning = false;
-  pomoSeconds = 0;
-  tickPomodoro(); // advance phase
+function updatePomoDisplay() {
+  const ring = $('#pomo-ring');
+  if (!ring) return;
+  const isBreak = pomoPhase !== 'focus';
+  $('#pomo-phase').textContent = PHASES[pomoPhase].label;
+  $('#pomo-phase').classList.toggle('break-mode', isBreak);
+  ring.classList.toggle('break-mode', isBreak);
+  ring.setAttribute('stroke-dashoffset', RING * pomoSeconds / pomoTotalSeconds);
+  $('#pomo-time').textContent = fmtTime(pomoSeconds);
+  $('#pomo-play-btn').textContent = pomoRunning ? '⏸' : '▶';
+  $('#pomo-session').textContent = `Session ${pomoSessionCount + 1}`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -621,261 +477,101 @@ function skipPomodoro() {
 // ══════════════════════════════════════════════════════════════════════════
 
 async function renderStopwatch(container) {
-  let todayEntriesHTML = '';
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const entries = await Go.GetTimeEntries(today + 'T00:00:00', today + 'T23:59:59');
-    const swEntries = entries.filter(e => e.note && e.note.includes('Stopwatch'));
-    if (swEntries && swEntries.length > 0) {
-      todayEntriesHTML = `
-        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0">
-          <div class="card-header">
-            <span class="card-title">Today's Stopwatch Sessions</span>
-          </div>
-          <div style="max-height: 200px; overflow-y: auto;">
-            ${swEntries.map(e => `
-              <div class="activity-item" style="cursor: default;">
-                <div class="activity-dot" style="background: ${e.taskColor}"></div>
-                <div class="activity-info">
-                  <div class="activity-name">${esc(e.taskName)}</div>
-                  <div class="activity-meta">${fmtTimeOnly(e.startTime)} - ${fmtTimeOnly(e.endTime)} ${e.note ? `• ${esc(e.note)}` : ''}</div>
-                </div>
-                <div class="activity-duration">${fmtDuration(e.duration)}</div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      `;
-    } else {
-      todayEntriesHTML = `
-        <div class="card mt-lg animate-in" style="max-width:500px;margin:var(--space-lg) auto 0;text-align:center">
-          <div class="text-muted" style="font-size:12px;padding:var(--space-md)">No stopwatch sessions logged today yet.</div>
-        </div>
-      `;
-    }
-  } catch(e) {
-    console.error(e);
-  }
-
   container.innerHTML = `
     <div class="view-header animate-in">
       <h1>Stopwatch</h1>
       <p>Track time in real-time for any task</p>
     </div>
-    <div class="card animate-in" style="max-width:500px;margin:0 auto;text-align:center">
-      <div class="form-group" style="max-width:300px;margin:0 auto var(--space-lg)">
+    <div class="card narrow text-center animate-in">
+      <div class="form-group task-picker">
         <label class="form-label">Select Task</label>
-        <div class="flex gap-sm">
-          <select class="form-select" id="sw-task-select" style="flex:1">
-            <option value="">Choose a task…</option>
-          </select>
-          <button class="btn btn-secondary" id="sw-new-task-btn" style="padding:0 12px" data-tooltip="New Task">+</button>
-        </div>
-        <div id="sw-quick-add-container" class="hidden" style="margin-top:var(--space-xs);display:flex;gap:var(--space-xs)">
-          <input type="text" id="sw-quick-add-input" class="form-input" placeholder="New task name..." style="flex:1;padding:6px 10px;font-size:12px">
-          <button class="btn btn-primary btn-sm" id="sw-quick-add-save">Save</button>
-          <button class="btn btn-secondary btn-sm" id="sw-quick-add-cancel">✕</button>
-        </div>
+        ${taskPickerHTML('sw-task')}
       </div>
-      <div class="stopwatch-display" id="sw-display">${fmtTime(swSeconds)}</div>
-      <div class="timer-controls" style="margin-top:var(--space-lg)">
+      <div class="stopwatch-display" id="sw-display"></div>
+      <div class="timer-controls mt-lg">
         <button class="timer-btn" onclick="resetStopwatch()" data-tooltip="Reset">↺</button>
-        <button class="timer-btn primary" onclick="toggleStopwatch()" id="sw-play-btn">
-          ${swRunning ? '⏸' : '▶'}
-        </button>
+        <button class="timer-btn primary" onclick="toggleStopwatch()" id="sw-play-btn"></button>
         <button class="timer-btn" onclick="stopAndSaveStopwatch()" data-tooltip="Save">💾</button>
       </div>
-      <div style="margin-top:var(--space-md)">
-        <label style="font-size:12px;color:var(--text-tertiary);cursor:pointer">
-          <input type="checkbox" id="sw-mini-check" ${swMiniVisible ? 'checked' : ''} onchange="toggleMiniStopwatch(this.checked)">
-          Show floating timer
-        </label>
-      </div>
+      <label class="checkbox-label mt-md">
+        <input type="checkbox" id="sw-mini-check" onchange="setMiniMode(this.checked)"> Show floating timer
+      </label>
     </div>
-    ${todayEntriesHTML}
-  `;
+    <div class="card narrow mt-lg animate-in" id="stopwatch-sessions"></div>`;
 
-  // Populate tasks dropdown
-  await loadTasksDropdown('#sw-task-select', swTaskId);
-
-  // Hook up quick task add
-  const newBtn = $('#sw-new-task-btn');
-  const containerDiv = $('#sw-quick-add-container');
-  const input = $('#sw-quick-add-input');
-  const saveBtn = $('#sw-quick-add-save');
-  const cancelBtn = $('#sw-quick-add-cancel');
-
-  newBtn?.addEventListener('click', () => {
-    containerDiv?.classList.remove('hidden');
-    input?.focus();
-  });
-
-  cancelBtn?.addEventListener('click', () => {
-    containerDiv?.classList.add('hidden');
-    if (input) input.value = '';
-  });
-
-  saveBtn?.addEventListener('click', async () => {
-    const name = input?.value?.trim();
-    if (!name) return;
-    try {
-      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
-      const id = await Go.AddTask(name, color);
-      containerDiv?.classList.add('hidden');
-      if (input) input.value = '';
-      
-      // Reload dropdown and select new task
-      const select = $('#sw-task-select');
-      if (select) {
-        select.innerHTML = '<option value="">Choose a task…</option>';
-        await loadTasksDropdown('#sw-task-select', id);
-        swTaskId = id;
-        swTaskName = name;
-        const miniName = $('#mini-task-name');
-        if (miniName) miniName.textContent = name;
-      }
-    } catch(e) {
-      showAlertModal('Error', 'Failed to add task: ' + e);
-    }
+  syncStopwatch();
+  loadTodaySessions('stopwatch');
+  await initTaskPicker('sw-task', 'Choose a task…', swTaskId, (id, name) => {
+    swTaskId = id;
+    swTaskName = name;
+    syncStopwatch();
   });
 }
 
-async function loadTasksDropdown(selector, selectedId) {
-  try {
-    const tasks = await Go.GetTasks();
-    const select = $(selector);
-    if (!select) return;
-    tasks.forEach(t => {
-      const opt = document.createElement('option');
-      opt.value = t.id;
-      opt.textContent = t.name;
-      if (t.id === selectedId) opt.selected = true;
-      select.appendChild(opt);
-    });
-    select.addEventListener('change', () => {
-      const id = parseInt(select.value);
-      const task = tasks.find(t => t.id === id);
-      if (selector === '#sw-task-select') {
-        swTaskId = id || null;
-        swTaskName = task?.name || '';
-        const miniName = $('#mini-task-name');
-        if (miniName) miniName.textContent = swTaskName || '—';
-      } else if (selector === '#pomo-task-select') {
-        pomoTaskId = id || null;
-      }
-    });
-  } catch (e) { console.error(e); }
+const swElapsed = () => Math.floor((swBaseMs + (swRunning ? Date.now() - swSince : 0)) / 1000);
+
+// Pushes stopwatch state to both the main view and the floating timer.
+function syncStopwatch() {
+  const time = fmtTime(swElapsed()), icon = swRunning ? '⏸' : '▶';
+  $$('#sw-display, #mini-time').forEach(n => { n.textContent = time; });
+  $$('#sw-play-btn, #mini-pause').forEach(n => { n.textContent = icon; });
+  $('#mini-task-name').textContent = swTaskName || '—';
 }
 
 function toggleStopwatch() {
-  if (swRunning) {
-    clearInterval(swTimer);
-    swRunning = false;
-    const btn = $('#sw-play-btn');
-    if (btn) btn.textContent = '▶';
-    const miniPause = $('#mini-pause');
-    if (miniPause) miniPause.textContent = '▶';
-  } else {
-    swRunning = true;
-    swTimer = setInterval(tickStopwatch, 1000);
-    const btn = $('#sw-play-btn');
-    if (btn) btn.textContent = '⏸';
-    const miniPause = $('#mini-pause');
-    if (miniPause) miniPause.textContent = '⏸';
+  clearInterval(swTimer);
+  if (swRunning) swBaseMs += Date.now() - swSince;
+  else {
+    swSince = Date.now();
+    swTimer = setInterval(syncStopwatch, 250);
   }
-}
-
-function tickStopwatch() {
-  swSeconds++;
-  const display = $('#sw-display');
-  if (display) display.textContent = fmtTime(swSeconds);
-  const miniTime = $('#mini-time');
-  if (miniTime) miniTime.textContent = fmtTime(swSeconds);
+  swRunning = !swRunning;
+  syncStopwatch();
 }
 
 function resetStopwatch() {
   clearInterval(swTimer);
   swRunning = false;
-  swSeconds = 0;
-  const display = $('#sw-display');
-  if (display) display.textContent = fmtTime(0);
-  const btn = $('#sw-play-btn');
-  if (btn) btn.textContent = '▶';
-  const miniTime = $('#mini-time');
-  if (miniTime) miniTime.textContent = fmtTime(0);
+  swBaseMs = 0;
+  syncStopwatch();
 }
 
 async function stopAndSaveStopwatch() {
-  clearInterval(swTimer);
-  swRunning = false;
-
-  if (swSeconds < 1) { showAlertModal('Validation Warning', 'Nothing to save — timer is at 0.'); return; }
-  if (!swTaskId) { showAlertModal('Validation Warning', 'Please select a task first.'); return; }
-
+  await setMiniMode(false); // dialogs don't fit in the floating window
+  const seconds = swElapsed();
+  if (seconds < 1) return showAlertModal('Validation Warning', 'Nothing to save — timer is at 0.');
+  if (!swTaskId) return showAlertModal('Validation Warning', 'Please select a task first.');
   try {
-    await Go.SaveStopwatchEntry(swTaskId, swSeconds, 'Stopwatch session');
-    swSeconds = 0;
-    const display = $('#sw-display');
-    if (display) display.textContent = fmtTime(0);
-    const miniTime = $('#mini-time');
-    if (miniTime) miniTime.textContent = fmtTime(0);
-    const btn = $('#sw-play-btn');
-    if (btn) btn.textContent = '▶';
-    await hideMiniStopwatch();
-    if (currentView === 'stopwatch') await renderStopwatch($('#main-content'));
-  } catch (e) {
-    showAlertModal('Error', 'Failed to save: ' + e);
-  }
+    await Go.SaveStopwatchEntry(swTaskId, seconds, 'Stopwatch session');
+    resetStopwatch();
+    loadTodaySessions('stopwatch');
+  } catch (e) { showAlertModal('Error', `Failed to save: ${e}`); }
 }
 
-async function toggleMiniStopwatch(show) {
-  swMiniVisible = show;
-  const mini = $('#mini-stopwatch');
-  if (mini) mini.classList.toggle('hidden', !show);
-  
-  if (show) {
-    document.body.classList.add('mini-mode');
-    swPinned = true;
-    const pin = $('#mini-pin');
-    if (pin) pin.textContent = '📍';
-    try {
-      await Go.EnterMiniMode();
-    } catch(e) { console.error(e); }
-  } else {
-    document.body.classList.remove('mini-mode');
-    swPinned = false;
-    const pin = $('#mini-pin');
-    if (pin) pin.textContent = '📌';
-    try {
-      await Go.ExitMiniMode();
-    } catch(e) { console.error(e); }
-  }
-}
-
-async function hideMiniStopwatch() {
-  swMiniVisible = false;
-  const mini = $('#mini-stopwatch');
-  if (mini) mini.classList.add('hidden');
+async function setMiniMode(on) {
+  if (swMini === on) return;
+  swMini = swPinned = on;
+  document.body.classList.toggle('mini-mode', on);
   const check = $('#sw-mini-check');
-  if (check) check.checked = false;
-  document.body.classList.remove('mini-mode');
-  swPinned = false;
-  const pin = $('#mini-pin');
-  if (pin) pin.textContent = '📌';
-  try {
-    await Go.ExitMiniMode();
-  } catch(e) { console.error(e); }
+  if (check) check.checked = on;
+  syncPin();
+  try { await (on ? Go.EnterMiniMode() : Go.ExitMiniMode()); } catch (e) { console.error(e); }
 }
 
 async function togglePin() {
   swPinned = !swPinned;
+  syncPin();
+  try { await Go.ToggleAlwaysOnTop(swPinned); } catch (e) { console.error(e); }
+}
+
+function syncPin() {
   const pin = $('#mini-pin');
-  if (pin) pin.textContent = swPinned ? '📍' : '📌';
-  await toggleMiniStopwatch(swPinned);
+  pin.textContent = swPinned ? '📍' : '📌';
+  pin.title = swPinned ? 'Unpin from top' : 'Keep on top';
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// TIME TRACKING VIEW
+// TIME LOG VIEW
 // ══════════════════════════════════════════════════════════════════════════
 
 async function renderTimeTracking(container) {
@@ -885,323 +581,149 @@ async function renderTimeTracking(container) {
         <h1>Time Log</h1>
         <p>View and manage all tracked time entries</p>
       </div>
-      <button class="btn btn-primary" onclick="showAddEntryModal()">+ Add Entry</button>
+      <button class="btn btn-primary" onclick="showEntryModal()">+ Add Entry</button>
     </div>
     <div class="card animate-in">
-      <div class="flex items-center gap-md mb-md" style="flex-wrap:wrap">
-        <div class="form-group" style="margin-bottom:0;flex:1;min-width:140px">
-          <label class="form-label">From</label>
-          <input type="date" class="form-input" id="tt-start" onchange="reloadTimeEntries()">
-        </div>
-        <div class="form-group" style="margin-bottom:0;flex:1;min-width:140px">
-          <label class="form-label">To</label>
-          <input type="date" class="form-input" id="tt-end" onchange="reloadTimeEntries()">
-        </div>
-      </div>
-      <div id="tt-summary" class="flex gap-lg mb-md" style="font-size:13px;color:var(--text-secondary)"></div>
-      <div style="overflow-x:auto">
+      ${dateRangeHTML('tt', 30, 'reloadTimeEntries()')}
+      <div id="tt-summary" class="flex gap-lg mb-md text-secondary"></div>
+      <div class="table-wrap">
         <table class="data-table">
-          <thead><tr>
-            <th>Task</th><th>Date</th><th>Start</th><th>End</th><th>Duration</th><th>Note</th><th></th>
-          </tr></thead>
+          <thead><tr><th>Task</th><th>Date</th><th>Start</th><th>End</th><th>Duration</th><th>Note</th><th></th></tr></thead>
           <tbody id="tt-body"></tbody>
         </table>
       </div>
-      <div id="tt-empty" class="hidden">
-        <div class="empty-state"><div class="empty-icon">📭</div><p>No time entries found for this period.</p></div>
-      </div>
-    </div>
-  `;
-
-  // Default date range: last 30 days
-  const now = new Date();
-  const start = new Date(now);
-  start.setDate(start.getDate() - 30);
-  const startInput = $('#tt-start');
-  const endInput = $('#tt-end');
-  if (startInput) startInput.value = start.toISOString().split('T')[0];
-  if (endInput) endInput.value = now.toISOString().split('T')[0];
-
+      <div id="tt-empty" class="hidden">${emptyState('📭', 'No time entries found for this period.')}</div>
+    </div>`;
   await reloadTimeEntries();
 }
 
 async function reloadTimeEntries() {
-  const startVal = $('#tt-start')?.value || '';
-  const endVal = $('#tt-end')?.value || '';
-  const tbody = $('#tt-body');
-  const emptyEl = $('#tt-empty');
-  const summaryEl = $('#tt-summary');
-  if (!tbody) return;
-
+  const from = $('#tt-start')?.value, to = $('#tt-end')?.value;
   try {
-    const entries = await Go.GetTimeEntries(
-      startVal ? startVal + 'T00:00:00' : '',
-      endVal ? endVal + 'T23:59:59' : ''
-    );
-
-    tbody.innerHTML = '';
-    if (!entries || entries.length === 0) {
-      emptyEl?.classList.remove('hidden');
-      if (summaryEl) summaryEl.innerHTML = '';
-      return;
-    }
-    emptyEl?.classList.add('hidden');
-
-    // Summary
-    const totalSec = entries.reduce((s, e) => s + e.duration, 0);
-    if (summaryEl) {
-      summaryEl.innerHTML = `
-        <span>📊 ${entries.length} entries</span>
-        <span>⏱ Total: <strong>${fmtDuration(totalSec)}</strong></span>
-      `;
-    }
-
-    entries.forEach(entry => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><span class="flex items-center gap-sm"><span class="color-dot" style="background:${entry.taskColor}"></span>${esc(entry.taskName)}</span></td>
-        <td>${fmtDate(entry.startTime)}</td>
-        <td>${fmtTimeOnly(entry.startTime)}</td>
-        <td>${fmtTimeOnly(entry.endTime)}</td>
-        <td><strong>${fmtDuration(entry.duration)}</strong></td>
-        <td style="color:var(--text-tertiary);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${entry.note ? esc(entry.note) : '—'}</td>
-        <td>
-          <div class="flex gap-sm">
-            <button class="btn btn-sm btn-ghost" data-edit="${entry.id}">✏️</button>
-            <button class="btn btn-sm btn-danger" data-del="${entry.id}">🗑</button>
-          </div>
-        </td>
-      `;
-      tr.querySelector('[data-edit]').addEventListener('click', () => showEditEntryModal(entry));
-      tr.querySelector('[data-del]').addEventListener('click', () => deleteEntry(entry.id));
-      tbody.appendChild(tr);
-    });
+    const entries = await Go.GetTimeEntries(from ? `${from}T00:00:00` : '', to ? `${to}T23:59:59` : '');
+    const tbody = $('#tt-body');
+    if (!tbody) return;
+    const total = entries.reduce((s, e) => s + e.duration, 0);
+    $('#tt-empty').classList.toggle('hidden', entries.length > 0);
+    $('#tt-summary').innerHTML = entries.length
+      ? `<span>📊 ${entries.length} entries</span><span>⏱ Total: <strong>${fmtDuration(total)}</strong></span>`
+      : '';
+    tbody.innerHTML = entries.map((e, i) => `
+      <tr>
+        <td><span class="flex items-center gap-sm"><span class="color-dot" style="background:${e.taskColor}"></span>${esc(e.taskName)}</span></td>
+        <td>${fmtDate(e.startTime)}</td>
+        <td>${fmtTimeOnly(e.startTime)}</td>
+        <td>${fmtTimeOnly(e.endTime)}</td>
+        <td><strong>${fmtDuration(e.duration)}</strong></td>
+        <td class="note-cell" title="${esc(e.note)}">${esc(e.note) || '—'}</td>
+        <td><div class="flex gap-sm">
+          <button class="btn btn-sm btn-ghost" data-edit="${i}" title="Edit">✏️</button>
+          <button class="btn btn-sm btn-danger" data-del="${i}" title="Delete">🗑</button>
+        </div></td>
+      </tr>`).join('');
+    bindItemActions(tbody, entries, showEntryModal, deleteEntry);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="text-danger">Error: ${e}</td></tr>`;
+    const tbody = $('#tt-body');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="text-danger">Error: ${esc(e)}</td></tr>`;
   }
 }
 
-async function deleteEntry(id) {
+function deleteEntry(id) {
   showConfirmModal('Delete Entry', 'Are you sure you want to delete this time entry? This action cannot be undone.', async () => {
     try {
       await Go.DeleteTimeEntry(id);
       await reloadTimeEntries();
-    } catch (e) { showAlertModal('Error', 'Failed to delete entry: ' + e); }
+    } catch (e) { showAlertModal('Error', `Failed to delete entry: ${e}`); }
   });
 }
 
-// ── Add/Edit Entry Modal ─────────────────────────────────────────────────
-
-function showAddEntryModal() {
-  showEntryModal(null);
-}
-
-function showEditEntryModal(entry) {
-  showEntryModal(entry);
-}
-
-async function showEntryModal(entry) {
-  const isEdit = !!entry;
-  const root = $('#modal-root');
-
-  // Parse existing entry times
-  let startVal = '', endVal = '', noteVal = '';
-  let taskIdVal = null;
-  if (entry) {
-    startVal = entry.startTime?.replace(' ', 'T').substring(0, 16) || '';
-    endVal = entry.endTime?.replace(' ', 'T').substring(0, 16) || '';
-    noteVal = entry.note || '';
-    taskIdVal = entry.taskId;
-  } else {
-    // Default to now
-    const now = new Date();
-    const end = now.toISOString().substring(0, 16);
-    const start = new Date(now.getTime() - 3600000).toISOString().substring(0, 16);
-    startVal = start;
-    endVal = end;
-  }
-
-  root.innerHTML = `
-    <div class="modal-overlay" id="entry-modal-overlay">
-      <div class="modal">
-        <div class="modal-title">${isEdit ? 'Edit Entry' : 'Add Time Entry'}</div>
-        <div class="form-group">
-          <label class="form-label">Task</label>
-          <div class="flex gap-sm">
-            <select class="form-select" id="modal-task" style="flex:1"></select>
-            <button class="btn btn-secondary" id="modal-new-task-btn" style="padding:0 12px" data-tooltip="New Task">+</button>
-          </div>
-          <div id="modal-quick-add-container" class="hidden" style="margin-top:var(--space-xs);display:flex;gap:var(--space-xs)">
-            <input type="text" id="modal-quick-add-input" class="form-input" placeholder="New task name..." style="flex:1;padding:6px 10px;font-size:12px">
-            <button class="btn btn-primary btn-sm" id="modal-quick-add-save">Save</button>
-            <button class="btn btn-secondary btn-sm" id="modal-quick-add-cancel">✕</button>
-          </div>
-        </div>
-        <div class="grid-2">
-          <div class="form-group">
-            <label class="form-label">Start Time</label>
-            <input type="datetime-local" class="form-input" id="modal-start" value="${startVal}">
-          </div>
-          <div class="form-group">
-            <label class="form-label">End Time</label>
-            <input type="datetime-local" class="form-input" id="modal-end" value="${endVal}">
-          </div>
-        </div>
-        <div id="modal-duration-display" class="text-muted" style="font-size:12px;margin-bottom:var(--space-sm)"></div>
-        <div class="form-group">
-          <label class="form-label">Note</label>
-          <input type="text" class="form-input" id="modal-note" value="${noteVal}" placeholder="Optional note…">
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" id="modal-save-btn">${isEdit ? 'Update' : 'Add'}</button>
-        </div>
+async function showEntryModal(entry = null) {
+  const now = new Date();
+  const m = openModal(`
+    <div class="modal-title">${entry ? 'Edit Entry' : 'Add Time Entry'}</div>
+    <div class="form-group">
+      <label class="form-label">Task</label>
+      ${taskPickerHTML('modal-task')}
+    </div>
+    <div class="grid-2">
+      <div class="form-group">
+        <label class="form-label">Start Time</label>
+        <input type="datetime-local" step="1" class="form-input" id="modal-start" value="${entry?.startTime ?? localDateTime(new Date(now - 3600e3))}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">End Time</label>
+        <input type="datetime-local" step="1" class="form-input" id="modal-end" value="${entry?.endTime ?? localDateTime(now)}">
       </div>
     </div>
-  `;
+    <div class="form-hint" id="modal-duration"></div>
+    <div class="form-group">
+      <label class="form-label">Note</label>
+      <input type="text" class="form-input" id="modal-note" value="${esc(entry?.note)}" maxlength="500" placeholder="Optional note…">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" data-close>Cancel</button>
+      <button class="btn btn-primary" id="modal-save">${entry ? 'Update' : 'Add'}</button>
+    </div>`);
 
-  // Load tasks
-  await loadTasksDropdown('#modal-task', taskIdVal);
+  const field = sel => m.querySelector(sel);
+  const withSeconds = v => `${v}:00`.slice(0, 19); // inputs omit ":00" seconds
+  const seconds = () => (new Date(field('#modal-end').value) - new Date(field('#modal-start').value)) / 1000;
+  const showDuration = () => {
+    const s = seconds();
+    field('#modal-duration').textContent = s > 0 ? `Duration: ${fmtDuration(s)}` : '';
+  };
+  showDuration();
+  field('#modal-start').addEventListener('input', showDuration);
+  field('#modal-end').addEventListener('input', showDuration);
 
-  // Hook up quick task add
-  const mNewBtn = $('#modal-new-task-btn');
-  const mContainerDiv = $('#modal-quick-add-container');
-  const mInput = $('#modal-quick-add-input');
-  const mSaveBtn = $('#modal-quick-add-save');
-  const mCancelBtn = $('#modal-quick-add-cancel');
-
-  mNewBtn?.addEventListener('click', () => {
-    mContainerDiv?.classList.remove('hidden');
-    mInput?.focus();
-  });
-
-  mCancelBtn?.addEventListener('click', () => {
-    mContainerDiv?.classList.add('hidden');
-    if (mInput) mInput.value = '';
-  });
-
-  mSaveBtn?.addEventListener('click', async () => {
-    const name = mInput?.value?.trim();
-    if (!name) return;
+  field('#modal-save').addEventListener('click', async () => {
+    const taskId = +field('#modal-task').value;
+    if (!taskId) return showAlertModal('Validation Warning', 'Please select a task.');
+    if (!(seconds() > 0)) return showAlertModal('Validation Warning', 'End time must be after start time.');
+    const args = [taskId, withSeconds(field('#modal-start').value), withSeconds(field('#modal-end').value), field('#modal-note').value];
     try {
-      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
-      const id = await Go.AddTask(name, color);
-      mContainerDiv?.classList.add('hidden');
-      if (mInput) mInput.value = '';
-      
-      // Reload dropdown and select new task
-      const select = $('#modal-task');
-      if (select) {
-        select.innerHTML = '';
-        await loadTasksDropdown('#modal-task', id);
-      }
-    } catch(e) {
-      showAlertModal('Error', 'Failed to add task: ' + e);
-    }
+      await (entry ? Go.UpdateTimeEntry(entry.id, ...args) : Go.AddTimeEntry(...args));
+      m.remove();
+      reloadTimeEntries();
+    } catch (e) { showAlertModal('Error', `Failed to save entry: ${e}`); }
   });
 
-  // Duration display
-  function updateDuration() {
-    const s = new Date($('#modal-start')?.value);
-    const e = new Date($('#modal-end')?.value);
-    const disp = $('#modal-duration-display');
-    if (disp && s && e && e > s) {
-      const diff = Math.floor((e - s) / 1000);
-      disp.textContent = `Duration: ${fmtDuration(diff)}`;
-    } else if (disp) {
-      disp.textContent = '';
-    }
-  }
-  updateDuration();
-  $('#modal-start')?.addEventListener('change', updateDuration);
-  $('#modal-end')?.addEventListener('change', updateDuration);
-
-  // Overlay close
-  $('#entry-modal-overlay')?.addEventListener('click', (e) => {
-    if (e.target.id === 'entry-modal-overlay') closeModal();
-  });
-
-  // Save
-  $('#modal-save-btn')?.addEventListener('click', async () => {
-    const taskId = parseInt($('#modal-task')?.value);
-    const startTime = $('#modal-start')?.value?.replace('T', ' ') + ':00';
-    const endTime = $('#modal-end')?.value?.replace('T', ' ') + ':00';
-    const note = $('#modal-note')?.value || '';
-
-    if (!taskId) { showAlertModal('Validation Warning', 'Please select a task.'); return; }
-    const startD = new Date($('#modal-start')?.value);
-    const endD = new Date($('#modal-end')?.value);
-    if (endD <= startD) { showAlertModal('Validation Warning', 'End time must be after start time.'); return; }
-    const duration = Math.floor((endD - startD) / 1000);
-
-    try {
-      if (isEdit) {
-        await Go.UpdateTimeEntry(entry.id, taskId, startTime, endTime, duration, note);
-      } else {
-        await Go.AddTimeEntry(taskId, startTime, endTime, duration, note);
-      }
-      closeModal();
-      await reloadTimeEntries();
-    } catch (e) { showAlertModal('Error', 'Failed to save entry: ' + e); }
-  });
+  await initTaskPicker('modal-task', '', entry?.taskId);
 }
 
-function closeModal() {
-  const root = $('#modal-root');
-  if (root) root.innerHTML = '';
+// ══════════════════════════════════════════════════════════════════════════
+// MODALS — stacked in #modal-root, so an alert never destroys an open form
+// ══════════════════════════════════════════════════════════════════════════
+
+function openModal(html, cls = '') {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal ${cls}">${html}</div>`;
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay || e.target.closest('[data-close]')) overlay.remove();
+  });
+  $('#modal-root').appendChild(overlay);
+  return overlay;
 }
 
 function showAlertModal(title, message) {
-  const root = $('#modal-root');
-  if (!root) return;
-  root.innerHTML = `
-    <div class="modal-overlay" id="alert-modal-overlay">
-      <div class="modal animate-in" style="max-width: 400px; text-align: center;">
-        <div class="modal-title" style="margin-bottom: var(--space-md); font-weight: 700;">${title}</div>
-        <p class="text-muted" style="margin-bottom: var(--space-lg); font-size: 13.5px; line-height: 1.6;">${message}</p>
-        <div class="modal-actions" style="justify-content: center; margin-top: var(--space-md);">
-          <button class="btn btn-primary" onclick="closeModal()">OK</button>
-        </div>
-      </div>
-    </div>
-  `;
-  $('#alert-modal-overlay')?.addEventListener('click', (e) => {
-    if (e.target.id === 'alert-modal-overlay') closeModal();
-  });
+  openModal(`
+    <div class="modal-title">${esc(title)}</div>
+    <p class="modal-text">${esc(message)}</p>
+    <div class="modal-actions"><button class="btn btn-primary" data-close>OK</button></div>`, 'modal-sm')
+    .querySelector('button').focus();
 }
 
-function showConfirmModal(title, message, onConfirm, onCancel = null) {
-  const root = $('#modal-root');
-  if (!root) return;
-  root.innerHTML = `
-    <div class="modal-overlay" id="confirm-modal-overlay">
-      <div class="modal animate-in" style="max-width: 400px; text-align: center;">
-        <div class="modal-title" style="margin-bottom: var(--space-md); color: var(--danger); font-weight: 700;">${title}</div>
-        <p class="text-muted" style="margin-bottom: var(--space-lg); font-size: 13.5px; line-height: 1.6;">${message}</p>
-        <div class="modal-actions" style="justify-content: center; gap: var(--space-md); margin-top: var(--space-md);">
-          <button class="btn btn-secondary" id="confirm-cancel-btn" style="min-width: 100px;">Cancel</button>
-          <button class="btn btn-danger" id="confirm-ok-btn" style="min-width: 100px;">Delete</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  const close = () => {
-    closeModal();
-    if (onCancel) onCancel();
-  };
-
-  $('#confirm-cancel-btn')?.addEventListener('click', close);
-  $('#confirm-modal-overlay')?.addEventListener('click', (e) => {
-    if (e.target.id === 'confirm-modal-overlay') close();
-  });
-  
-  $('#confirm-ok-btn')?.addEventListener('click', () => {
-    closeModal();
-    onConfirm();
-  });
+function showConfirmModal(title, message, onConfirm) {
+  openModal(`
+    <div class="modal-title text-danger">${esc(title)}</div>
+    <p class="modal-text">${esc(message)}</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" data-close>Cancel</button>
+      <button class="btn btn-danger" data-close data-ok>Delete</button>
+    </div>`, 'modal-sm')
+    .querySelector('[data-ok]').addEventListener('click', onConfirm);
 }
-
 
 // ══════════════════════════════════════════════════════════════════════════
 // ANALYTICS VIEW
@@ -1213,18 +735,9 @@ async function renderAnalytics(container) {
       <h1>Analytics</h1>
       <p>Insights into how you spend your time</p>
     </div>
-    <div class="flex items-center gap-md mb-lg animate-in">
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">From</label>
-        <input type="date" class="form-input" id="an-start" onchange="reloadAnalytics()">
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">To</label>
-        <input type="date" class="form-input" id="an-end" onchange="reloadAnalytics()">
-      </div>
-    </div>
+    <div class="animate-in">${dateRangeHTML('an', 14, 'reloadAnalytics()')}</div>
     <div class="stats-grid stagger" id="an-stats"></div>
-    <div class="grid-2 stagger" style="animation-delay:150ms">
+    <div class="grid-2 stagger">
       <div class="card">
         <div class="card-header"><span class="card-title">Daily Trend</span></div>
         <div class="chart-container"><canvas id="an-daily-chart"></canvas></div>
@@ -1233,180 +746,42 @@ async function renderAnalytics(container) {
         <div class="card-header"><span class="card-title">Time by Task</span></div>
         <div id="an-task-breakdown"></div>
       </div>
-    </div>
-  `;
-
-  // Default: last 14 days
-  const now = new Date();
-  const start = new Date(now);
-  start.setDate(start.getDate() - 14);
-  const startInput = $('#an-start');
-  const endInput = $('#an-end');
-  if (startInput) startInput.value = start.toISOString().split('T')[0];
-  if (endInput) endInput.value = now.toISOString().split('T')[0];
-
+    </div>`;
   await reloadAnalytics();
 }
 
 async function reloadAnalytics() {
-  const startVal = $('#an-start')?.value || '';
-  const endVal = $('#an-end')?.value || '';
-
+  const from = $('#an-start')?.value, to = $('#an-end')?.value;
+  if (!from || !to) return;
   try {
-    const data = await Go.GetAnalyticsData(startVal, endVal);
+    const data = await Go.GetAnalyticsData(from, to);
+    const stats = $('#an-stats');
+    if (!stats) return;
 
-    // Stats
-    const avg = data.dailySummary.length > 0 ? data.totalSeconds / data.dailySummary.length : 0;
-    const maxDay = data.dailySummary.reduce((m, d) => Math.max(m, d.totalSeconds), 0);
-    const statsEl = $('#an-stats');
-    if (statsEl) {
-      statsEl.innerHTML = `
-        <div class="stat-card" style="--stat-accent:var(--accent);--stat-bg:var(--accent-dim)">
-          <div class="stat-icon">⏱</div>
-          <div class="stat-value">${fmtDuration(data.totalSeconds || 0)}</div>
-          <div class="stat-label">Total Time</div>
-        </div>
-        <div class="stat-card" style="--stat-accent:var(--info);--stat-bg:var(--info-dim)">
-          <div class="stat-icon">📊</div>
-          <div class="stat-value">${fmtDuration(Math.round(avg))}</div>
-          <div class="stat-label">Daily Average</div>
-        </div>
-        <div class="stat-card" style="--stat-accent:var(--success);--stat-bg:var(--success-dim)">
-          <div class="stat-icon">🏆</div>
-          <div class="stat-value">${fmtDuration(maxDay)}</div>
-          <div class="stat-label">Best Day</div>
-        </div>
-      `;
+    // One point per calendar day, so gaps show as zero instead of being skipped.
+    const byDate = Object.fromEntries(data.dailySummary.map(d => [d.date, d.totalSeconds]));
+    const days = [];
+    for (const d = new Date(`${from}T00:00:00`); ymd(d) <= to; d.setDate(d.getDate() + 1)) {
+      days.push({ date: ymd(d), totalSeconds: byDate[ymd(d)] || 0 });
     }
+    const active = data.dailySummary.length;
+    stats.innerHTML =
+      statCard('⏱', fmtDuration(data.totalSeconds), 'Total Time') +
+      statCard('📊', fmtDuration(active ? Math.round(data.totalSeconds / active) : 0), 'Daily Average', 'info') +
+      statCard('🏆', fmtDuration(Math.max(0, ...data.dailySummary.map(d => d.totalSeconds))), 'Best Day', 'success');
+    drawDailyChart($('#an-daily-chart'), days);
 
-    // Daily chart
-    drawDailyChart($('#an-daily-chart'), data.dailySummary || []);
-
-    // Task breakdown
-    const breakdownEl = $('#an-task-breakdown');
-    if (breakdownEl) {
-      if (!data.taskSummary || data.taskSummary.length === 0) {
-        breakdownEl.innerHTML = '<div class="empty-state"><p>No data in this range.</p></div>';
-      } else {
-        breakdownEl.innerHTML = '';
-        const maxSec = data.taskSummary[0].totalSeconds;
-        data.taskSummary.forEach(ts => {
-          const pct = maxSec > 0 ? (ts.totalSeconds / maxSec * 100) : 0;
-          const item = el('div', { style: { marginBottom: '12px' } }, [
-            el('div', { className: 'flex justify-between items-center', style: { marginBottom: '4px' } }, [
-              el('span', { className: 'flex items-center gap-sm', style: { fontSize: '13px' } }, [
-                el('span', { className: 'color-dot', style: { background: ts.taskColor } }),
-                document.createTextNode(ts.taskName),
-              ]),
-              el('span', { className: 'text-muted', style: { fontSize: '12px' }, textContent: fmtDuration(ts.totalSeconds) }),
-            ]),
-            el('div', { className: 'progress-bar' }, [
-              el('div', { className: 'progress-fill', style: { width: pct + '%', background: ts.taskColor } }),
-            ]),
-          ]);
-          breakdownEl.appendChild(item);
-        });
-      }
-    }
+    const max = data.taskSummary[0]?.totalSeconds;
+    $('#an-task-breakdown').innerHTML = data.taskSummary.length ? data.taskSummary.map(t => `
+      <div class="breakdown-row">
+        <div class="flex justify-between items-center">
+          <span class="flex items-center gap-sm"><span class="color-dot" style="background:${t.taskColor}"></span>${esc(t.taskName)}</span>
+          <span class="text-muted">${fmtDuration(t.totalSeconds)}</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${t.totalSeconds / max * 100}%;background:${t.taskColor}"></div></div>
+      </div>`).join('') : emptyState('📊', 'No data in this range.');
   } catch (e) {
     console.error('Analytics error', e);
-  }
-}
-
-function drawDailyChart(canvas, dailySummary) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.parentElement.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width;
-  const H = rect.height;
-
-  if (dailySummary.length === 0) {
-    ctx.fillStyle = 'hsl(220, 12%, 45%)';
-    ctx.font = '13px Inter, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('No data available', W / 2, H / 2);
-    return;
-  }
-
-  const values = dailySummary.map(d => d.totalSeconds / 3600);
-  const labels = dailySummary.map(d => {
-    const dt = new Date(d.date + 'T00:00:00');
-    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  });
-  const maxVal = Math.max(...values, 1);
-
-  const padX = 45;
-  const padY = 20;
-  const chartW = W - padX - 10;
-  const chartH = H - padY * 2;
-
-  // Grid
-  ctx.strokeStyle = 'hsla(230, 30%, 40%, 0.15)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = padY + (chartH / 4) * i;
-    ctx.beginPath();
-    ctx.moveTo(padX, y);
-    ctx.lineTo(W - 10, y);
-    ctx.stroke();
-  }
-
-  // Line
-  const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6366f1';
-  ctx.strokeStyle = accentColor;
-  ctx.lineWidth = 2;
-  ctx.lineJoin = 'round';
-  ctx.beginPath();
-  values.forEach((v, i) => {
-    const x = padX + (i / Math.max(values.length - 1, 1)) * chartW;
-    const y = padY + chartH - (v / maxVal) * chartH;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  // Area fill
-  ctx.lineTo(padX + chartW, padY + chartH);
-  ctx.lineTo(padX, padY + chartH);
-  ctx.closePath();
-  const grad = ctx.createLinearGradient(0, padY, 0, padY + chartH);
-  grad.addColorStop(0, 'hsla(245, 80%, 65%, 0.2)');
-  grad.addColorStop(1, 'hsla(245, 80%, 65%, 0.01)');
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  // Dots
-  ctx.fillStyle = accentColor;
-  values.forEach((v, i) => {
-    const x = padX + (i / Math.max(values.length - 1, 1)) * chartW;
-    const y = padY + chartH - (v / maxVal) * chartH;
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
-  });
-
-  // X labels (show first, middle, last)
-  ctx.fillStyle = 'hsl(220, 12%, 45%)';
-  ctx.font = '10px Inter, sans-serif';
-  ctx.textAlign = 'center';
-  const showIndices = [0, Math.floor(labels.length / 2), labels.length - 1];
-  showIndices.forEach(i => {
-    if (i < labels.length) {
-      const x = padX + (i / Math.max(labels.length - 1, 1)) * chartW;
-      ctx.fillText(labels[i], x, H - 4);
-    }
-  });
-
-  // Y labels
-  ctx.textAlign = 'right';
-  for (let i = 0; i <= 4; i++) {
-    const y = padY + (chartH / 4) * i;
-    const v = ((4 - i) / 4 * maxVal).toFixed(1);
-    ctx.fillText(v + 'h', padX - 6, y + 3);
   }
 }
 
@@ -1421,212 +796,148 @@ async function renderTasks(container) {
         <h1>Tasks</h1>
         <p>Manage your projects and task categories</p>
       </div>
-      <button class="btn btn-primary" onclick="showAddTaskModal()">+ New Task</button>
+      <button class="btn btn-primary" onclick="showTaskModal()">+ New Task</button>
     </div>
-    <div id="tasks-grid" class="stagger" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--space-md)"></div>
-    <div id="tasks-empty" class="hidden">
-      <div class="empty-state"><div class="empty-icon">🗂️</div><p>No tasks yet. Create one to start tracking!</p></div>
-    </div>
-  `;
-
+    <div id="tasks-grid" class="tasks-grid stagger"></div>`;
   await reloadTasks();
 }
 
 async function reloadTasks() {
-  const grid = $('#tasks-grid');
-  const emptyEl = $('#tasks-empty');
-  if (!grid) return;
-
   try {
     const tasks = await Go.GetTasks();
-    grid.innerHTML = '';
-    if (!tasks || tasks.length === 0) {
-      emptyEl?.classList.remove('hidden');
-      return;
-    }
-    emptyEl?.classList.add('hidden');
-
-    tasks.forEach(task => {
-      const card = el('div', { className: 'card', style: { position: 'relative', overflow: 'hidden' } }, [
-        el('div', { style: { position: 'absolute', top: 0, left: 0, right: 0, height: '3px', background: task.color } }),
-        el('div', { className: 'flex items-center gap-md', style: { marginBottom: '8px' } }, [
-          el('span', { className: 'color-dot', style: { background: task.color, width: '18px', height: '18px' } }),
-          el('span', { style: { fontSize: '15px', fontWeight: '600' }, textContent: task.name }),
-        ]),
-        el('div', { className: 'text-muted', style: { fontSize: '11px', marginBottom: '12px' }, textContent: `Created ${fmtDate(task.createdAt)}` }),
-        el('div', { className: 'flex gap-sm' }, [
-          el('button', { className: 'btn btn-sm btn-secondary', textContent: '✏️ Edit', onClick: () => showEditTaskModal(task) }),
-          el('button', { className: 'btn btn-sm btn-danger', textContent: '🗑 Delete', onClick: () => deleteTask(task.id) }),
-        ]),
-      ]);
-      grid.appendChild(card);
-    });
+    const grid = $('#tasks-grid');
+    if (!grid) return;
+    grid.innerHTML = tasks.map((t, i) => `
+      <div class="card task-card" style="--task-color:${t.color}">
+        <div class="task-card-name"><span class="color-dot"></span>${esc(t.name)}</div>
+        <div class="task-card-date text-muted">Created ${fmtDate(`${t.createdAt.replace(' ', 'T')}Z`)}</div>
+        <div class="flex gap-sm">
+          <button class="btn btn-sm btn-secondary" data-edit="${i}">✏️ Edit</button>
+          <button class="btn btn-sm btn-danger" data-del="${i}">🗑 Delete</button>
+        </div>
+      </div>`).join('') || emptyState('🗂️', 'No tasks yet. Create one to start tracking!');
+    bindItemActions(grid, tasks, showTaskModal, deleteTask);
   } catch (e) {
-    grid.innerHTML = `<div class="card text-danger">Error: ${e}</div>`;
+    const grid = $('#tasks-grid');
+    if (grid) grid.innerHTML = `<div class="card text-danger">Error: ${esc(e)}</div>`;
   }
 }
 
-async function deleteTask(id) {
+function deleteTask(id) {
   showConfirmModal('Delete Task', 'Are you sure you want to delete this task and all its associated time entries? This action cannot be undone.', async () => {
     try {
       await Go.DeleteTask(id);
       await reloadTasks();
-    } catch (e) { showAlertModal('Error', 'Failed to delete task: ' + e); }
+    } catch (e) { showAlertModal('Error', `Failed to delete task: ${e}`); }
   });
 }
 
-function showAddTaskModal() {
-  showTaskModal(null);
-}
-
-function showEditTaskModal(task) {
-  showTaskModal(task);
-}
-
-function showTaskModal(task) {
-  const isEdit = !!task;
-  const root = $('#modal-root');
-  const selectedColor = task?.color || COLORS[0];
-
-  root.innerHTML = `
-    <div class="modal-overlay" id="task-modal-overlay">
-      <div class="modal">
-        <div class="modal-title">${isEdit ? 'Edit Task' : 'New Task'}</div>
-        <div class="form-group">
-          <label class="form-label">Task Name</label>
-          <input type="text" class="form-input" id="modal-task-name" value="${task?.name || ''}" placeholder="e.g., Deep Work, Meetings…">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Color</label>
-          <div class="color-picker-grid" id="modal-color-grid"></div>
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" id="modal-save-task">${isEdit ? 'Update' : 'Create'}</button>
-        </div>
+function showTaskModal(task = null) {
+  let color = task?.color || COLORS[0];
+  const m = openModal(`
+    <div class="modal-title">${task ? 'Edit Task' : 'New Task'}</div>
+    <div class="form-group">
+      <label class="form-label">Task Name</label>
+      <input type="text" class="form-input" id="modal-task-name" value="${esc(task?.name)}" maxlength="100" placeholder="e.g., Deep Work, Meetings…">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Color</label>
+      <div class="color-picker-grid">
+        ${COLORS.map(c => `<button class="color-swatch ${c === color ? 'selected' : ''}" style="background:${c}" data-color="${c}"></button>`).join('')}
       </div>
     </div>
-  `;
+    <div class="modal-actions">
+      <button class="btn btn-secondary" data-close>Cancel</button>
+      <button class="btn btn-primary" id="modal-save-task">${task ? 'Update' : 'Create'}</button>
+    </div>`);
 
-  // Color grid
-  const colorGrid = $('#modal-color-grid');
-  let currentColor = selectedColor;
-  COLORS.forEach(c => {
-    const swatch = el('div', {
-      className: `color-swatch ${c === currentColor ? 'selected' : ''}`,
-      style: { background: c },
-      onClick: () => {
-        currentColor = c;
-        colorGrid.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
-        swatch.classList.add('selected');
-      }
-    });
-    colorGrid.appendChild(swatch);
-  });
-
-  // Overlay close
-  $('#task-modal-overlay')?.addEventListener('click', (e) => {
-    if (e.target.id === 'task-modal-overlay') closeModal();
-  });
-
-  // Save
-  $('#modal-save-task')?.addEventListener('click', async () => {
-    const name = $('#modal-task-name')?.value?.trim();
-    if (!name) { showAlertModal('Validation Warning', 'Task name is required.'); return; }
+  const input = m.querySelector('#modal-task-name');
+  const save = async () => {
+    const name = input.value.trim();
+    if (!name) return showAlertModal('Validation Warning', 'Task name is required.');
     try {
-      if (isEdit) {
-        await Go.UpdateTask(task.id, name, currentColor);
-      } else {
-        await Go.AddTask(name, currentColor);
-      }
-      closeModal();
-      if (currentView === 'tasks') await reloadTasks();
-    } catch (e) { showAlertModal('Error', 'Failed to save task: ' + e); }
+      await (task ? Go.UpdateTask(task.id, name, color) : Go.AddTask(name, color));
+      m.remove();
+      if (currentView === 'tasks') reloadTasks();
+    } catch (e) { showAlertModal('Error', `Failed to save task: ${e}`); }
+  };
+
+  m.querySelector('.color-picker-grid').addEventListener('click', e => {
+    const swatch = e.target.closest('[data-color]');
+    if (!swatch) return;
+    color = swatch.dataset.color;
+    m.querySelectorAll('.color-swatch').forEach(s => s.classList.toggle('selected', s === swatch));
   });
+  m.querySelector('#modal-save-task').addEventListener('click', save);
+  input.addEventListener('keydown', e => e.key === 'Enter' && save());
+  input.focus();
 }
 
 // ══════════════════════════════════════════════════════════════════════════
 // SETTINGS VIEW
 // ══════════════════════════════════════════════════════════════════════════
 
-async function renderSettings(container) {
+function renderSettings(container) {
   container.innerHTML = `
     <div class="view-header animate-in">
       <h1>Settings</h1>
       <p>Configure your Tempus experience</p>
     </div>
-    <div class="card animate-in" style="max-width:600px">
-      <div class="card-header"><span class="card-title">About</span></div>
-      <div style="display:flex;align-items:center;gap:var(--space-md);margin-bottom:var(--space-md)">
-        <div style="width:48px;height:48px;border-radius:var(--r-lg);background:var(--accent-dim);display:flex;align-items:center;justify-content:center;font-size:24px">⏱</div>
-        <div>
-          <div style="font-weight:600;font-size:16px">Tempus</div>
-          <div class="text-muted" style="font-size:12px">v2.0.0 — Built with Go + Wails</div>
+    <div class="settings-stack stagger">
+      <div class="card">
+        <div class="card-header"><span class="card-title">About</span></div>
+        <div class="about-row">
+          <div class="about-logo">⏱</div>
+          <div>
+            <div class="about-name">Tempus</div>
+            <div class="text-muted">v2.0.0 — Built with Go + Wails</div>
+          </div>
+        </div>
+        <p class="text-muted">
+          Tempus is a modern time tracking application designed for focused productivity.
+          Track your tasks, use the Pomodoro technique, and gain insights into how you spend your time.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Data</span></div>
+        <p class="text-muted">
+          Your data is stored locally in a SQLite database in your user config folder
+          (<code>%APPDATA%\\Tempus\\tempus.db</code> on Windows). No data leaves your machine.
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Keyboard Shortcuts</span></div>
+        <div class="shortcut-grid">
+          ${Object.values(VIEWS).map(([label], i) => `<div><span class="text-muted">${label}</span><kbd>${i + 1}</kbd></div>`).join('')}
+          <div><span class="text-muted">Start / pause timer</span><kbd>Space</kbd></div>
         </div>
       </div>
-      <p class="text-muted" style="font-size:13px;line-height:1.7">
-        Tempus is a modern time tracking application designed for focused productivity.
-        Track your tasks, use the Pomodoro technique, and gain insights into how you spend your time.
-      </p>
-    </div>
-    <div class="card animate-in mt-lg" style="max-width:600px">
-      <div class="card-header"><span class="card-title">Data</span></div>
-      <p class="text-muted" style="font-size:13px;margin-bottom:var(--space-md)">
-        Your data is stored locally in a SQLite database. No data leaves your machine.
-      </p>
-      <div class="flex gap-sm">
-        <button class="btn btn-secondary btn-sm" onclick="showAlertModal('Data Location', 'Your database is stored locally at:<br><br><span style=\'user-select:text;font-family:monospace;background:var(--bg-elevated);padding:6px 12px;border-radius:6px;display:block;word-break:break-all;font-size:12px;\'>%APPDATA%\\\\Tempus\\\\tempus.db</span>')">📁 Data Location</button>
-      </div>
-    </div>
-    <div class="card animate-in mt-lg" style="max-width:600px">
-      <div class="card-header"><span class="card-title">Keyboard Shortcuts</span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Dashboard</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">1</kbd></div>
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Time Log</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">2</kbd></div>
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Stopwatch</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">3</kbd></div>
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Pomodoro</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">4</kbd></div>
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Analytics</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">5</kbd></div>
-        <div class="flex justify-between" style="padding:4px 0"><span class="text-muted">Tasks</span><kbd style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:11px">6</kbd></div>
-      </div>
-    </div>
-  `;
+    </div>`;
 }
 
-// ── Keyboard shortcuts ───────────────────────────────────────────────────
-document.addEventListener('keydown', (e) => {
-  // Don't trigger if user is typing in an input
-  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+// ── Views & keyboard shortcuts (number keys follow this order) ───────────
 
-  switch (e.key) {
-    case '1': navigateTo('dashboard'); break;
-    case '2': navigateTo('time-tracking'); break;
-    case '3': navigateTo('stopwatch'); break;
-    case '4': navigateTo('pomodoro'); break;
-    case '5': navigateTo('analytics'); break;
-    case '6': navigateTo('tasks'); break;
-    case ' ':
-      if (currentView === 'pomodoro') { e.preventDefault(); togglePomodoro(); }
-      else if (currentView === 'stopwatch') { e.preventDefault(); toggleStopwatch(); }
-      break;
+const VIEWS = {
+  'dashboard':     ['Dashboard', renderDashboard],
+  'time-tracking': ['Time Log', renderTimeTracking],
+  'stopwatch':     ['Stopwatch', renderStopwatch],
+  'pomodoro':      ['Pomodoro', renderPomodoro],
+  'analytics':     ['Analytics', renderAnalytics],
+  'tasks':         ['Tasks', renderTasks],
+  'settings':      ['Settings', renderSettings],
+};
+
+document.addEventListener('keydown', e => {
+  const modal = $('#modal-root').lastElementChild;
+  if (e.key === 'Escape') return modal?.remove();
+  if (modal || e.target.matches('input, select, textarea')) return;
+
+  if (e.key === ' ') {
+    const toggle = swMini || currentView === 'stopwatch' ? toggleStopwatch
+      : currentView === 'pomodoro' ? togglePomodoro : null;
+    if (toggle) { e.preventDefault(); toggle(); }
+  } else {
+    const view = Object.keys(VIEWS)[e.key - 1];
+    if (view && !swMini) navigateTo(view);
   }
 });
-
-// ── Make functions globally accessible ───────────────────────────────────
-window.navigateTo = navigateTo;
-window.togglePomodoro = togglePomodoro;
-window.resetPomodoro = resetPomodoro;
-window.skipPomodoro = skipPomodoro;
-window.togglePomoSettings = togglePomoSettings;
-window.updatePomoSetting = updatePomoSetting;
-window.toggleStopwatch = toggleStopwatch;
-window.resetStopwatch = resetStopwatch;
-window.stopAndSaveStopwatch = stopAndSaveStopwatch;
-window.toggleMiniStopwatch = toggleMiniStopwatch;
-window.togglePin = togglePin;
-window.showAddEntryModal = showAddEntryModal;
-window.showAddTaskModal = showAddTaskModal;
-window.closeModal = closeModal;
-window.showAlertModal = showAlertModal;
-window.showConfirmModal = showConfirmModal;
-window.reloadTimeEntries = reloadTimeEntries;
-window.reloadAnalytics = reloadAnalytics;
